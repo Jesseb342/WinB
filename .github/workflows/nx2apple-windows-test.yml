@@ -513,16 +513,16 @@ jobs:
                   digest.update(chunk)
 
           signatures = {
-              b"PK\\x03\\x04": "ZIP",
-              b"Rar!\\x1a\\x07": "RAR",
-              b"7z\\xbc\\xaf\\x27\\x1c": "7-Zip",
-              b"\\x1f\\x8b": "GZIP",
+              b"PK\x03\x04": "ZIP",
+              b"Rar!\x1a\x07": "RAR",
+              b"7z\xbc\xaf\x27\x1c": "7-Zip",
+              b"\x1f\x8b": "GZIP",
               b"BZh": "BZIP2",
-              b"\\xfd7zXZ\\x00": "XZ",
-              b"\\x28\\xb5\\x2f\\xfd": "Zstandard",
+              b"\xfd7zXZ\x00": "XZ",
+              b"\x28\xb5\x2f\xfd": "Zstandard",
               b"PFS0": "Nintendo Switch PFS0/NSP (not an archive wrapper)",
               b"NSZ": "NSZ",
-              b"\\x1f\\x8b\\x08": "GZIP (possible tar.gz)",
+              b"\x1f\x8b\x08": "GZIP (possible tar.gz)",
           }
           detected = next((name for magic, name in signatures.items() if head.startswith(magic)), "unknown")
           print(f"Downloaded path: {path.name}")
