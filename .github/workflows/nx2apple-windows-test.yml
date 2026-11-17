@@ -127,7 +127,7 @@ jobs:
               raise SystemExit(f"Expected one unar.exe, found {len(candidates)}")
           print(f"Installed unar: {candidates[0]}")
           with open(Path(__import__("os").environ["GITHUB_PATH"]), "a", encoding="utf-8") as path_file:
-              path_file.write(str(candidates[0].parent) + "\\n")
+              path_file.write(str(candidates[0].parent) + "\n")
           PY
           unar -version
 
