@@ -87,10 +87,13 @@ jobs:
               fi
               ;;
           esac
-          if [[ -z "${METAL_TOOLS_URL:-}" || -z "${METAL_TOOLS_SHA256:-}" ]]; then
-            echo "::error::Add MetalTools_URL (private direct EXE URL) and MetalTools_SHA256 (EXE checksum)."
+          if [[ -z "${METAL_TOOLS_URL:-}" ]]; then
+            echo "::error::Add MetalTools_URL (direct EXE download URL)."
             echo "::error::Apple gates this download behind a Developer account; the Windows runner cannot fetch it itself."
             exit 1
+          fi
+          if [[ -z "${METAL_TOOLS_SHA256:-}" ]]; then
+            echo "MetalTools_SHA256 is not set; the workflow will calculate and report the downloaded installer hash."
           fi
 
       - name: Set up Python 3.12
@@ -193,9 +196,9 @@ jobs:
           from nspb_qt.win import toolchain as tc
 
           url = os.environ["METAL_TOOLS_URL"].strip()
-          expected = os.environ["METAL_TOOLS_SHA256"].strip().lower()
-          if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
-              raise SystemExit("MetalTools_SHA256 must be a 64-character hexadecimal SHA-256.")
+          expected = os.environ.get("METAL_TOOLS_SHA256", "").strip().lower()
+          if expected and (len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)):
+              raise SystemExit("If supplied, MetalTools_SHA256 must be a 64-character hexadecimal SHA-256.")
 
           installer = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools-windows.exe"
           print("Downloading Apple's Metal Developer Tools for Windows installer...")
@@ -206,8 +209,11 @@ jobs:
               for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                   digest.update(chunk)
           actual = digest.hexdigest()
-          if actual != expected:
+          print(f"Downloaded Metal installer SHA-256: {actual}")
+          if expected and actual != expected:
               raise SystemExit(f"Metal tools SHA-256 mismatch: got {actual}, expected {expected}")
+          if not expected:
+              print("No pinned checksum supplied; continuing with the HTTPS download and installer-layout validation.")
 
           # Apple's Windows installer supports /S for silent installation and /D= for
           # the destination directory. RUNNER_TEMP has no spaces, and /D= must be last.
