@@ -831,14 +831,16 @@ jobs:
           # ordinary TTF/OTF inputs on the normal auto-detect path.
           python - <<'PY'
           from pathlib import Path
-          source = Path("engine/dm/tools/make_shared_fonts.py")
+          source = Path("../engine/dm/tools/make_shared_fonts.py")
           text = source.read_text(encoding="utf-8")
-          old = "f = TTFont(src)"
-          new = 'f = TTFont(src, fontNumber=0 if open(src, "rb").read(4) == b"ttcf" else -1)'
+          old = "    f = TTFont(src)"
+          new = "    with open(src, \"rb\") as font_file:\\n        is_ttc = font_file.read(4) == b\"ttcf\"\\n    f = TTFont(src, fontNumber=0) if is_ttc else TTFont(src)"
           if text.count(old) != 1:
               raise SystemExit(f"Expected exactly one TTFont(src) call in {source}; found {text.count(old)}")
           source.write_text(text.replace(old, new), encoding="utf-8")
-          print("Patched make_shared_fonts.py to select TTC face 0 on Windows.")
+          # Fail immediately if the patched source is syntactically invalid.
+          compile(source.read_text(encoding="utf-8"), str(source), "exec")
+          print(f"Patched and syntax-checked {source} to select TTC face 0 on Windows.")
           PY
 
           # The Windows process-group wrapper otherwise kills compiler descendants
