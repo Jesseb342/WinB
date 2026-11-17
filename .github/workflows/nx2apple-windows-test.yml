@@ -32,7 +32,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 360
     env:
-      NSPB_REPO: ${{ github.workspace }}/nx2apple
+      NSPB_REPO: ${{ github.workspace }}/nx2apple/engine
       GAME_URL: ${{ secrets.Game_URL }}
       UPDATE_URL: ${{ secrets.Update_URL }}
       DLC_URL: ${{ secrets.DLC_URL }}
