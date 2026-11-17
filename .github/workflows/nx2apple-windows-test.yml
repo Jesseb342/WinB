@@ -497,8 +497,45 @@ jobs:
           # with The Unarchiver, then require exactly one NSP for the base game.
           EXTRACT_DIR="$WORK/base-game-extracted"
           mkdir -p "$EXTRACT_DIR"
-          echo "Inspecting game archive before extraction..."
-          lsar "$WORK/game-archive"
+          echo "Inspecting downloaded game file signature and metadata..."
+          python - "$WORK/game-archive" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          size = path.stat().st_size
+          digest = hashlib.sha256()
+          with path.open("rb") as stream:
+              head = stream.read(64)
+              digest.update(head)
+              for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                  digest.update(chunk)
+
+          signatures = {
+              b"PK\\x03\\x04": "ZIP",
+              b"Rar!\\x1a\\x07": "RAR",
+              b"7z\\xbc\\xaf\\x27\\x1c": "7-Zip",
+              b"\\x1f\\x8b": "GZIP",
+              b"BZh": "BZIP2",
+              b"\\xfd7zXZ\\x00": "XZ",
+              b"\\x28\\xb5\\x2f\\xfd": "Zstandard",
+              b"PFS0": "Nintendo Switch PFS0/NSP (not an archive wrapper)",
+              b"NSZ": "NSZ",
+              b"\\x1f\\x8b\\x08": "GZIP (possible tar.gz)",
+          }
+          detected = next((name for magic, name in signatures.items() if head.startswith(magic)), "unknown")
+          print(f"Downloaded path: {path.name}")
+          print(f"File size: {size:,} bytes")
+          print(f"First 64 bytes (hex): {head.hex()}")
+          print(f"Detected signature: {detected}")
+          print(f"SHA-256: {digest.hexdigest()}")
+          PY
+          echo "Attempting archive listing with lsar..."
+          if ! lsar "$WORK/game-archive"; then
+            echo "::error::lsar could not recognize the downloaded file. The signature, size, and SHA-256 above identify what Game_URL actually delivered."
+            exit 1
+          fi
           echo "Extracting game archive with unar..."
           unar -f -o "$EXTRACT_DIR" "$WORK/game-archive"
           mapfile -d '' NSP_FILES < <(find "$EXTRACT_DIR" -type f -iname '*.nsp' -print0)
