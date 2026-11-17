@@ -105,6 +105,22 @@ jobs:
           cache: pip
           cache-dependency-path: nx2apple/frontend-qt/requirements.txt
 
+      - name: Calculate game archive cache key
+        id: game-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL_HASH="$(printf '%s' "$GAME_URL" | sha256sum | cut -d' ' -f1)"
+          echo "url_hash=$URL_HASH" >> "$GITHUB_OUTPUT"
+          echo "Game archive cache key fingerprint: $URL_HASH"
+
+      - name: Restore cached game archive
+        id: game-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nx2apple-inputs/game-archive
+          key: nx2apple-game-archive-${{ steps.game-cache-key.outputs.url_hash }}
+
       - name: Install unar archive extractor
         shell: bash
         run: |
@@ -122,22 +138,32 @@ jobs:
           archive, destination = Path(sys.argv[1]), Path(sys.argv[2])
           with zipfile.ZipFile(archive) as zf:
               zf.extractall(destination)
-          candidates = list(destination.rglob("unar.exe"))
-          if len(candidates) != 1:
-              raise SystemExit(f"Expected one unar.exe, found {len(candidates)}")
-          print(f"Installed unar: {candidates[0]}")
+          unar_candidates = list(destination.rglob("unar.exe"))
+          lsar_candidates = list(destination.rglob("lsar.exe"))
+          if len(unar_candidates) != 1 or len(lsar_candidates) != 1:
+              raise SystemExit(
+                  f"Expected one unar.exe and one lsar.exe; "
+                  f"found unar={len(unar_candidates)}, lsar={len(lsar_candidates)}"
+              )
+          tool_dir = unar_candidates[0].parent
+          if lsar_candidates[0].parent != tool_dir:
+              raise SystemExit("unar.exe and lsar.exe were extracted into different directories.")
+          print(f"Installed unar: {unar_candidates[0]}")
+          print(f"Installed lsar: {lsar_candidates[0]}")
           with open(Path(__import__("os").environ["GITHUB_PATH"]), "a", encoding="utf-8") as path_file:
-              path_file.write(str(candidates[0].parent) + "\n")
+              path_file.write(str(tool_dir) + "\n")
           PY
           # GITHUB_PATH is applied only to later steps, so prepend the
           # extracted executable directory to this shell's PATH as well.
           UNAR_EXE="$(find "$UNAR_DIR" -type f -iname 'unar.exe' -print -quit)"
-          if [[ -z "$UNAR_EXE" ]]; then
-            echo "::error::unar.exe was not found after extraction."
+          LSAR_EXE="$(find "$UNAR_DIR" -type f -iname 'lsar.exe' -print -quit)"
+          if [[ -z "$UNAR_EXE" || -z "$LSAR_EXE" ]]; then
+            echo "::error::unar.exe or lsar.exe was not found after extraction."
             exit 1
           fi
           export PATH="$(dirname "$UNAR_EXE"):$PATH"
           "$UNAR_EXE" -version
+          "$LSAR_EXE" -h
 
       - name: Install Apple Metal Developer Tools for Windows
         working-directory: nx2apple/frontend-qt
@@ -460,14 +486,19 @@ jobs:
             ls -lh "$output"
           }
 
-          download_file "$GAME_URL" "$WORK/game-archive"
+          if [[ -s "$WORK/game-archive" ]]; then
+            echo "Using restored game archive cache:"
+            ls -lh "$WORK/game-archive"
+          else
+            download_file "$GAME_URL" "$WORK/game-archive"
+          fi
 
           # Game_URL supplies a compressed archive, not a raw NSP. Extract it
           # with The Unarchiver, then require exactly one NSP for the base game.
           EXTRACT_DIR="$WORK/base-game-extracted"
           mkdir -p "$EXTRACT_DIR"
           echo "Inspecting game archive before extraction..."
-          unar -l "$WORK/game-archive"
+          lsar "$WORK/game-archive"
           echo "Extracting game archive with unar..."
           unar -f -o "$EXTRACT_DIR" "$WORK/game-archive"
           mapfile -d '' NSP_FILES < <(find "$EXTRACT_DIR" -type f -iname '*.nsp' -print0)
@@ -544,6 +575,13 @@ jobs:
           output.chmod(0o600)
           print(f"Decoded prod.keys ({len(decoded):,} bytes).")
           PY
+
+      - name: Save downloaded game archive cache
+        if: ${{ success() && steps.game-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nx2apple-inputs/game-archive
+          key: nx2apple-game-archive-${{ steps.game-cache-key.outputs.url_hash }}
 
           echo "Game input files prepared. Keys are not included in artifacts."
 
