@@ -63,6 +63,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Restore cached Windows toolchain
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.LOCALAPPDATA }}\NS Port Builder\tools
+            ${{ env.LOCALAPPDATA }}\NS Port Builder\sdks
+          key: nx2apple-toolchain-${{ runner.os }}-${{ hashFiles('nx2apple/frontend-qt/nspb_qt/win/toolchain.py', 'nx2apple/frontend-qt/nspb_qt/win/fetch.py', 'nx2apple/frontend-qt/nspb_qt/win/sdk_fetch.py') }}
+
       - name: Record NX2Apple revision
         shell: bash
         run: |
@@ -110,6 +119,13 @@ jobs:
           cache: pip
           cache-dependency-path: nx2apple/frontend-qt/requirements.txt
 
+      - name: Restore cached Python environment
+        id: python-venv-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .venv
+          key: nx2apple-python-${{ runner.os }}-3.12-${{ hashFiles('nx2apple/frontend-qt/requirements.txt', '.github/workflows/nx2apple-windows-test.yml') }}
+
       - name: Calculate game archive cache key
         id: game-cache-key
         shell: bash
@@ -145,7 +161,35 @@ jobs:
           Write-Host "Using RAR5-capable extractor: $sevenZip"
           "7-Zip path: $sevenZip" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
+      - name: Check restored Metal Developer Tools
+        id: metal-cache-check
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from nspb_qt.win import toolchain as tc
+
+          install_dir = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools"
+          root = tc.resolve_metal_dir(install_dir)
+          metal = tc.metal_tool("metal", sdk="iphoneos") if root else None
+          metallib = tc.metal_tool("metallib", sdk="iphoneos") if root else None
+          if root and metal and metallib:
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+                  f.write(f"NSPB_METAL_DIR={root}\n")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                  f.write("ready=true\n")
+              print(f"Restored Metal tools are valid: {metal}; {metallib}")
+          else:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                  f.write("ready=false\n")
+              print("No complete cached Metal installation; installer will run.")
+          PY
+
       - name: Install Apple Metal Developer Tools for Windows
+        if: steps.metal-cache-check.outputs.ready != 'true'
         working-directory: nx2apple/frontend-qt
         shell: bash
         run: |
@@ -328,6 +372,13 @@ jobs:
           installer.unlink(missing_ok=True)
           PY
 
+      - name: Save Metal Developer Tools cache
+        if: ${{ success() && steps.metal-cache-check.outputs.ready != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/metal-developer-tools
+          key: nx2apple-metal-${{ runner.os }}-6.2-v1
+
       - name: Set up .NET SDK 10
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -337,17 +388,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          # These are the Windows wheels and versions used by NX2Apple's own packaging workflow.
-          python -m pip install \
-            lz4==4.4.5 \
-            capstone==5.0.9 \
-            unicorn==2.1.4 \
-            fonttools==4.68.0 \
-            zbic==1.0.1.post1 \
-            backports.zstd==1.8.0 \
-            nsz==5.0.0 \
-            pillow
+          VENV="$GITHUB_WORKSPACE/.venv"
+          if [[ ! -x "$VENV/Scripts/python.exe" ]]; then
+            python -m venv "$VENV"
+          fi
+          echo "$VENV/Scripts" >> "$GITHUB_PATH"
+          VPY="$VENV/Scripts/python.exe"
+          if ! "$VPY" -c "import lz4, capstone, unicorn, fontTools, zbic, backports.zstd, nsz, PIL" 2>/dev/null; then
+            "$VPY" -m pip install --upgrade pip
+            "$VPY" -m pip install \
+              lz4==4.4.5 \
+              capstone==5.0.9 \
+              unicorn==2.1.4 \
+              fonttools==4.68.0 \
+              zbic==1.0.1.post1 \
+              backports.zstd==1.8.0 \
+              nsz==5.0.0 \
+              pillow
+          else
+            echo "Restored Python environment already contains all NX2Apple dependencies."
+          fi
+          "$VPY" -c "import lz4, capstone, unicorn, fontTools, zbic, backports.zstd, nsz, PIL; print('All NX2Apple Python dependencies verified.')"
+
+      - name: Save Python environment cache
+        if: ${{ success() && steps.python-venv-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .venv
+          key: nx2apple-python-${{ runner.os }}-3.12-${{ hashFiles('nx2apple/frontend-qt/requirements.txt', '.github/workflows/nx2apple-windows-test.yml') }}
 
       - name: Sync NX2Apple engine and patch queue
         working-directory: nx2apple
@@ -389,6 +457,15 @@ jobs:
           sdk_fetch.install_sdk(log=print)
           fetch.install_zstd(log=print)
           PY
+
+      - name: Save Windows toolchain cache
+        if: ${{ success() && steps.toolchain-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LOCALAPPDATA }}\NS Port Builder\tools
+            ${{ env.LOCALAPPDATA }}\NS Port Builder\sdks
+          key: nx2apple-toolchain-${{ runner.os }}-${{ hashFiles('nx2apple/frontend-qt/nspb_qt/win/toolchain.py', 'nx2apple/frontend-qt/nspb_qt/win/fetch.py', 'nx2apple/frontend-qt/nspb_qt/win/sdk_fetch.py') }}
 
       - name: Build the Windows SPIRV-Cross tool for the synced engine
         working-directory: nx2apple
