@@ -829,7 +829,7 @@ jobs:
           # The Windows process-group wrapper otherwise kills compiler descendants
           # only 5 seconds after own_compilers.py exits. Metal can still be flushing
           # completed shader outputs, so give the child job 90 seconds to drain.
-          python -c 'import nspb_qt.win.driver as driver; driver._WinProcGroup.DRAIN = 90.0; exec("def _finish_after_pipe_eof(self):" + chr(10) + " self.p.wait()" + chr(10) + " self.done = True" + chr(10) + " if not self._gone(5.0): print(\"[WARN] Build process exited and stdout closed; leaving a detached helper for runner cleanup.\")" + chr(10) + " return self.p.returncode"); driver._WinProcGroup.finish = _finish_after_pipe_eof; raise SystemExit(driver.main())' \\
+          python -c 'import nspb_qt.win.driver as driver; driver._WinProcGroup.DRAIN = 90.0; exec("def _finish_after_pipe_eof(self):" + chr(10) + " self.p.wait()" + chr(10) + " self.done = True" + chr(10) + " if not self._gone(5.0): print(\"[WARN] Build process exited and stdout closed; leaving a detached helper for runner cleanup.\")" + chr(10) + " return self.p.returncode"); driver._WinProcGroup.finish = _finish_after_pipe_eof; raise SystemExit(driver.main())' \
             "$RUNNER_TEMP/nx2apple-inputs/GameFiles" \
             -k "$RUNNER_TEMP/nx2apple-inputs/prod.keys" \
             --platform ios 2>&1 | tee "$RUNNER_TEMP/nx2apple-windows-build.log"
