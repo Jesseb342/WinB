@@ -427,6 +427,13 @@ jobs:
           echo "Engine upstream pin: $(cat .upstream-ref)"
           echo "Engine sync complete."
 
+      - name: Restore cached NuGet packages
+        id: nuget-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~\\.nuget\\packages
+          key: nx2apple-nuget-${{ runner.os }}-net10-${{ hashFiles('nx2apple/engine/dm/tools/nx_extract/*.csproj', 'nx2apple/engine/dm/tools/nx_extract/*.props', 'nx2apple/engine/dm/tools/nx_extract/*.targets') }}
+
       - name: Restore cached nx_extract executable
         id: nx-extract-cache
         uses: actions/cache/restore@v4
@@ -785,6 +792,13 @@ jobs:
           print("Prebuilt nx_extract is ready:", bundled / "nx_extract.exe")
           print("Embedded source SHA:", probe.stdout.strip())
           PY
+
+      - name: Save NuGet package cache
+        if: ${{ success() && steps.nuget-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~\\.nuget\\packages
+          key: nx2apple-nuget-${{ runner.os }}-net10-${{ hashFiles('nx2apple/engine/dm/tools/nx_extract/*.csproj', 'nx2apple/engine/dm/tools/nx_extract/*.props', 'nx2apple/engine/dm/tools/nx_extract/*.targets') }}
 
       - name: Save nx_extract executable cache
         if: ${{ success() && steps.nx-extract-cache.outputs.cache-hit != 'true' }}
