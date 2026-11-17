@@ -708,7 +708,7 @@ jobs:
           import hashlib
           source_hash = hashlib.sha256()
           for source in sorted([*project_dir.glob("*.cs"), *project_dir.glob("*.csproj")], key=lambda p: p.name):
-              source_hash.update(source.name.encode("utf-8") + b"\\0" + source.read_bytes() + b"\\0")
+              source_hash.update(source.name.encode("utf-8") + b"\0" + source.read_bytes() + b"\0")
           expected_source_sha = source_hash.hexdigest()[:16]
           bundled = repo / "dm/tools/nx_extract_bin"
           cached_exe = bundled / "nx_extract.exe"
