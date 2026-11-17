@@ -244,7 +244,7 @@ jobs:
           with installer.open("rb") as stream:
               stream.seek(pe_offset)
               pe_signature = stream.read(4)
-          if pe_signature != b"PE\\0\\0":
+          if pe_signature != b"PE\0\0":
               raise SystemExit("Metal download has an MZ header but no valid PE signature.")
 
           digest = hashlib.sha256()
