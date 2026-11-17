@@ -37,7 +37,7 @@ jobs:
       UPDATE_URL: ${{ secrets.Update_URL }}
       DLC_URL: ${{ secrets.DLC_URL }}
       KEYS_BASE64: ${{ secrets.Keys_URL }}
-      METAL_TOOLS_URL: ${{ secrets.MetalTools_URL }}
+      METAL_TOOLS_URL: ${{ secrets.Metal_URL || secrets.MetalTools_URL }}
       METAL_TOOLS_SHA256: ${{ secrets.MetalTools_SHA256 }}
       CONTENT_SELECTION: ${{ inputs.content }}
 
@@ -88,7 +88,7 @@ jobs:
               ;;
           esac
           if [[ -z "${METAL_TOOLS_URL:-}" ]]; then
-            echo "::error::Add MetalTools_URL (direct EXE download URL)."
+            echo "::error::Add Metal_URL (direct EXE download URL)."
             echo "::error::Apple gates this download behind a Developer account; the Windows runner cannot fetch it itself."
             exit 1
           fi
