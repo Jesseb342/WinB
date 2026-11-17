@@ -834,7 +834,9 @@ jobs:
           source = Path("../engine/dm/tools/make_shared_fonts.py")
           text = source.read_text(encoding="utf-8")
           old = "    f = TTFont(src)"
-          new = "    with open(src, \"rb\") as font_file:\\n        is_ttc = font_file.read(4) == b\"ttcf\"\\n    f = TTFont(src, fontNumber=0) if is_ttc else TTFont(src)"
+          new = """    with open(src, "rb") as font_file:
+                  is_ttc = font_file.read(4) == b"ttcf"
+              f = TTFont(src, fontNumber=0) if is_ttc else TTFont(src)"""
           if text.count(old) != 1:
               raise SystemExit(f"Expected exactly one TTFont(src) call in {source}; found {text.count(old)}")
           source.write_text(text.replace(old, new), encoding="utf-8")
