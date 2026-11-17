@@ -576,14 +576,14 @@ jobs:
           print(f"Decoded prod.keys ({len(decoded):,} bytes).")
           PY
 
+          echo "Game input files prepared. Keys are not included in artifacts."
+
       - name: Save downloaded game archive cache
         if: ${{ success() && steps.game-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/nx2apple-inputs/game-archive
           key: nx2apple-game-archive-${{ steps.game-cache-key.outputs.url_hash }}
-
-          echo "Game input files prepared. Keys are not included in artifacts."
 
       - name: Build unsigned iOS IPA with NX2Apple Windows driver
         working-directory: nx2apple/frontend-qt
