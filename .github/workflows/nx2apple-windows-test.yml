@@ -740,7 +740,9 @@ jobs:
           }
           Write-Host '----- remaining compiler and dotnet processes after driver -----'
           Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^(dotnet|metal|metallib|clang|clang\+\+|python)(\.exe)?
+            Where-Object { $_.Name -in @('dotnet.exe','metal.exe','metallib.exe','clang.exe','clang++.exe','python.exe') } |
+            Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List
+          Write-Host '----- end process snapshot -----'
 
       - name: Collect generated IPA
         if: success()
