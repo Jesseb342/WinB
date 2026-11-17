@@ -281,7 +281,7 @@ jobs:
           if metal is None or metallib is None:
               raise SystemExit(f"Metal installation is incomplete: metal.exe={metal}, metallib.exe={metallib}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"NSPB_METAL_DIR={metal_root}\\n")
+              env_file.write(f"NSPB_METAL_DIR={metal_root}\n")
           print(f"Metal compiler: {metal}")
           print(f"Metal library tool: {metallib}")
           print(f"Metal Developer Tools installed at: {metal_root}")
@@ -324,9 +324,28 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          from nspb_qt.win import fetch, sdk_fetch
+          import os
+          import shutil
+          from nspb_qt.win import fetch, sdk_fetch, toolchain as tc
 
-          fetch.install_llvm(log=print)
+          llvm_root = fetch.install_llvm(log=print)
+          # llvm-mingw ships the unified LLD driver as ld.lld.exe. The runner
+          # also has an older system LLVM whose ld64.lld.exe appears on PATH.
+          # Create the Mach-O driver alias inside our pinned LLVM tree and
+          # explicitly point the doctor/build at that tree.
+          lld_source = llvm_root / "bin" / "ld.lld.exe"
+          lld_target = llvm_root / "bin" / "ld64.lld.exe"
+          if not lld_source.is_file():
+              raise SystemExit(f"Pinned LLVM-MinGW linker is missing: {lld_source}")
+          if not tc._lld_has_macho(lld_source):
+              raise SystemExit(f"Pinned LLVM-MinGW LLD has no Mach-O driver: {lld_source}")
+          shutil.copy2(lld_source, lld_target)
+          os.environ["NSPB_LLVM_DIR"] = str(llvm_root)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"NSPB_LLVM_DIR={llvm_root}\n")
+          print(f"Using pinned Mach-O linker: {lld_target}")
+          print(f"Linker version: {tc.subprocess.run([str(lld_target), '--version'], capture_output=True, text=True, check=True).stdout.strip()}")
+
           sdk_fetch.install_sdk(log=print)
           fetch.install_zstd(log=print)
           PY
