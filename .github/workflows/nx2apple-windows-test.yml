@@ -206,6 +206,34 @@ jobs:
           print("Downloading Apple's Metal Developer Tools for Windows installer...")
           urllib.request.urlretrieve(url, installer)
 
+          size = installer.stat().st_size
+          with installer.open("rb") as stream:
+              header = stream.read(64)
+          print(f"Downloaded Metal installer size: {size:,} bytes")
+          print(f"Downloaded file header (first 32 bytes): {header[:32].hex()}")
+
+          # Reject login pages, HTML error documents, and truncated downloads before
+          # Windows attempts to launch them as executables.
+          if size < 1024 * 1024:
+              raise SystemExit(
+                  "Metal download is unexpectedly small (<1 MiB). Metal_URL may point "
+                  "to an Apple login/error page or an incomplete download, not the installer."
+              )
+          if len(header) < 64 or header[:2] != b"MZ":
+              raise SystemExit(
+                  "Metal download is not a Windows PE executable (missing MZ header). "
+                  "Metal_URL must be a direct URL to the downloaded .exe, not a web page."
+              )
+          pe_offset = int.from_bytes(header[0x3C:0x40], "little")
+          with installer.open("rb") as stream:
+              stream.seek(pe_offset)
+              pe_signature = stream.read(4)
+          if pe_signature != b"PE\\0\\0":
+              raise SystemExit(
+                  "Metal download has an MZ header but no valid PE signature; "
+                  "the installer download appears damaged or incomplete."
+              )
+
           digest = hashlib.sha256()
           with installer.open("rb") as stream:
               for chunk in iter(lambda: stream.read(1024 * 1024), b""):
