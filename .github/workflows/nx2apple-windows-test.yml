@@ -105,85 +105,6 @@ jobs:
           cache: pip
           cache-dependency-path: nx2apple/frontend-qt/requirements.txt
 
-      - name: Set up .NET SDK 10
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Install NX2Apple Windows build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          # These are the Windows wheels and versions used by NX2Apple's own packaging workflow.
-          python -m pip install \
-            lz4==4.4.5 \
-            capstone==5.0.9 \
-            unicorn==2.1.4 \
-            fonttools==4.68.0 \
-            zbic==1.0.1.post1 \
-            backports.zstd==1.8.0 \
-            nsz==5.0.0 \
-            pillow
-
-      - name: Sync NX2Apple engine and patch queue
-        working-directory: nx2apple
-        shell: bash
-        run: |
-          set -euo pipefail
-          python tools/engine.py -q sync
-          echo "Engine upstream pin: $(cat .upstream-ref)"
-          echo "Engine sync complete."
-
-      - name: Install LLVM-MinGW, iPhoneOS SDK and zstd
-        working-directory: nx2apple/frontend-qt
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from nspb_qt.win import fetch, sdk_fetch
-
-          fetch.install_llvm(log=print)
-          sdk_fetch.install_sdk(log=print)
-          fetch.install_zstd(log=print)
-          PY
-
-      - name: Build the Windows SPIRV-Cross tool for the synced engine
-        working-directory: nx2apple
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TOOL_DIR="engine/dm/gfx/tools/spirv_cross_bin"
-          TAG="$(sed -n 's/^TAG=\([^ ]*\).*/\1/p' "$TOOL_DIR/build.sh")"
-          COMMIT="$(sed -n 's/^COMMIT=\([^ ]*\).*/\1/p' "$TOOL_DIR/build.sh")"
-          if [[ -z "$TAG" || -z "$COMMIT" ]]; then
-            echo "::error::Could not read the pinned SPIRV-Cross tag/commit from $TOOL_DIR/build.sh"
-            exit 1
-          fi
-
-          git clone --quiet --depth 1 --branch "$TAG" https://github.com/KhronosGroup/SPIRV-Cross.git spirv-cross-src
-          ACTUAL="$(git -C spirv-cross-src rev-parse HEAD)"
-          if [[ "$ACTUAL" != "$COMMIT" ]]; then
-            echo "::error::SPIRV-Cross checkout $ACTUAL does not match expected commit $COMMIT"
-            exit 1
-          fi
-
-          cmake -S spirv-cross-src -B spirv-cross-build \
-            -DSPIRV_CROSS_ENABLE_TESTS=OFF \
-            -DSPIRV_CROSS_SKIP_INSTALL=ON
-          cmake --build spirv-cross-build --config Release --target spirv-cross --parallel
-
-          SPV_EXE="$(find spirv-cross-build -type f -name 'spirv-cross.exe' | head -1)"
-          if [[ -z "$SPV_EXE" || ! -f "$SPV_EXE" ]]; then
-            echo "::error::Windows SPIRV-Cross executable was not produced."
-            exit 1
-          fi
-
-          cp "$SPV_EXE" "$TOOL_DIR/spirv-cross.exe"
-          "$TOOL_DIR/spirv-cross.exe" --revision
-          echo "NSPB_SPIRV_CROSS=$GITHUB_WORKSPACE/nx2apple/$TOOL_DIR/spirv-cross.exe" >> "$GITHUB_ENV"
-
       - name: Install Apple Metal Developer Tools for Windows
         working-directory: nx2apple/frontend-qt
         shell: bash
@@ -363,6 +284,85 @@ jobs:
           print(f"Metal Developer Tools installed at: {metal_root}")
           installer.unlink(missing_ok=True)
           PY
+
+      - name: Set up .NET SDK 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install NX2Apple Windows build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # These are the Windows wheels and versions used by NX2Apple's own packaging workflow.
+          python -m pip install \
+            lz4==4.4.5 \
+            capstone==5.0.9 \
+            unicorn==2.1.4 \
+            fonttools==4.68.0 \
+            zbic==1.0.1.post1 \
+            backports.zstd==1.8.0 \
+            nsz==5.0.0 \
+            pillow
+
+      - name: Sync NX2Apple engine and patch queue
+        working-directory: nx2apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/engine.py -q sync
+          echo "Engine upstream pin: $(cat .upstream-ref)"
+          echo "Engine sync complete."
+
+      - name: Install LLVM-MinGW, iPhoneOS SDK and zstd
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from nspb_qt.win import fetch, sdk_fetch
+
+          fetch.install_llvm(log=print)
+          sdk_fetch.install_sdk(log=print)
+          fetch.install_zstd(log=print)
+          PY
+
+      - name: Build the Windows SPIRV-Cross tool for the synced engine
+        working-directory: nx2apple
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL_DIR="engine/dm/gfx/tools/spirv_cross_bin"
+          TAG="$(sed -n 's/^TAG=\([^ ]*\).*/\1/p' "$TOOL_DIR/build.sh")"
+          COMMIT="$(sed -n 's/^COMMIT=\([^ ]*\).*/\1/p' "$TOOL_DIR/build.sh")"
+          if [[ -z "$TAG" || -z "$COMMIT" ]]; then
+            echo "::error::Could not read the pinned SPIRV-Cross tag/commit from $TOOL_DIR/build.sh"
+            exit 1
+          fi
+
+          git clone --quiet --depth 1 --branch "$TAG" https://github.com/KhronosGroup/SPIRV-Cross.git spirv-cross-src
+          ACTUAL="$(git -C spirv-cross-src rev-parse HEAD)"
+          if [[ "$ACTUAL" != "$COMMIT" ]]; then
+            echo "::error::SPIRV-Cross checkout $ACTUAL does not match expected commit $COMMIT"
+            exit 1
+          fi
+
+          cmake -S spirv-cross-src -B spirv-cross-build \
+            -DSPIRV_CROSS_ENABLE_TESTS=OFF \
+            -DSPIRV_CROSS_SKIP_INSTALL=ON
+          cmake --build spirv-cross-build --config Release --target spirv-cross --parallel
+
+          SPV_EXE="$(find spirv-cross-build -type f -name 'spirv-cross.exe' | head -1)"
+          if [[ -z "$SPV_EXE" || ! -f "$SPV_EXE" ]]; then
+            echo "::error::Windows SPIRV-Cross executable was not produced."
+            exit 1
+          fi
+
+          cp "$SPV_EXE" "$TOOL_DIR/spirv-cross.exe"
+          "$TOOL_DIR/spirv-cross.exe" --revision
+          echo "NSPB_SPIRV_CROSS=$GITHUB_WORKSPACE/nx2apple/$TOOL_DIR/spirv-cross.exe" >> "$GITHUB_ENV"
 
       - name: Validate the Windows cross-toolchain
         working-directory: nx2apple/frontend-qt
