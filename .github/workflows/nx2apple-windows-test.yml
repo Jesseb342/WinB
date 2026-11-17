@@ -690,7 +690,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m nspb_qt.win.driver \
+          # The Windows process-group wrapper otherwise kills compiler descendants
+          # only 5 seconds after own_compilers.py exits. Metal can still be flushing
+          # completed shader outputs, so give the child job 90 seconds to drain.
+          python -c 'import nspb_qt.win.driver as driver; driver._WinProcGroup.DRAIN = 90.0; raise SystemExit(driver.main())' \
             "$RUNNER_TEMP/nx2apple-inputs/GameFiles" \
             -k "$RUNNER_TEMP/nx2apple-inputs/prod.keys" \
             --platform ios 2>&1 | tee "$RUNNER_TEMP/nx2apple-windows-build.log"
@@ -723,9 +726,88 @@ jobs:
               Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize
             Copy-Item -LiteralPath $dir.FullName -Destination (Join-Path $diag $dir.Name) -Recurse -Force
           }
-          Write-Host '----- dotnet processes remaining after driver -----'
-          Get-CimInstance Win32_Process -Filter "Name = 'dotnet.exe'" -ErrorAction SilentlyContinue |
-            Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | Format-List
+          # Preserve the shader compiler's complete log: the process-group failure
+          # happens after shader generation and this is the best evidence of its child tools.
+          $gameRoot = Join-Path $env:RUNNER_TEMP 'nx2apple-inputs/GameFiles'
+          $buildDirs = Get-ChildItem -LiteralPath $gameRoot -Directory -Filter '*_build' -ErrorAction SilentlyContinue
+          foreach ($buildDir in $buildDirs) {
+            $shaderLog = Join-Path $buildDir.FullName 'logs/dmsh_build.log'
+            if (Test-Path -LiteralPath $shaderLog) {
+              $dest = Join-Path $diag ("dmsh_build-" + $buildDir.Name + ".log")
+              Copy-Item -LiteralPath $shaderLog -Destination $dest -Force
+              Write-Host "Saved shader compiler log: $dest ($((Get-Item -LiteralPath $shaderLog).Length) bytes)"
+            }
+          }
+          Write-Host '----- remaining compiler and dotnet processes after driver -----'
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(dotnet|metal|metallib|clang|clang\+\+|python)(\.exe)?
+
+      - name: Collect generated IPA
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/nx2apple-ipa-output"
+          mkdir -p "$OUT"
+
+          mapfile -d '' IPA_FILES < <(
+            find "$GITHUB_WORKSPACE/nx2apple" "$RUNNER_TEMP" \
+              -type f -iname '*.ipa' \
+              -not -path "$RUNNER_TEMP/nx2apple-inputs/*" \
+              -print0
+          )
+
+          if (( ${#IPA_FILES[@]} == 0 )); then
+            echo "::error::The driver returned success, but no IPA was found in the workspace or runner temp folder."
+            exit 1
+          fi
+
+          for ipa in "${IPA_FILES[@]}"; do
+            cp "$ipa" "$OUT/$(basename "$ipa")"
+            echo "Collected IPA: $(basename "$ipa")"
+          done
+
+          echo "Found ${#IPA_FILES[@]} IPA file(s)." >> "$GITHUB_STEP_SUMMARY"
+          echo "IPA output is held on the runner. Upload is controlled by the workflow input." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifact (opt-in)
+        if: ${{ success() && inputs.upload_ipa }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-Windows-IPA
+          path: ${{ runner.temp }}/nx2apple-ipa-output/*.ipa
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Save Windows build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## NX2Apple Windows test"
+            echo
+            echo "- Runner: windows-latest"
+            echo "- NX2Apple revision: $(git -C nx2apple rev-parse HEAD 2>/dev/null || echo unavailable)"
+            echo "- Engine pin: $(cat nx2apple/.upstream-ref 2>/dev/null || echo unavailable)"
+            echo "- Content selection: $CONTENT_SELECTION"
+            echo "- Job status: ${{ job.status }}"
+            echo
+            echo "The IPA is uploaded only when the manual upload_ipa input is enabled."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-Windows-Diagnostics
+          path: |
+            ${{ runner.temp }}/nx2apple-toolchain-report.txt
+            ${{ runner.temp }}/nx2apple-windows-build.log
+            ${{ runner.temp }}/nx2apple-extra-diagnostics/**
+          if-no-files-found: warn
+          retention-days: 7
+ } |
+            Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List
           Write-Host '----- end process snapshot -----'
 
       - name: Collect generated IPA
