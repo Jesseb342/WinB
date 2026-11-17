@@ -273,6 +273,9 @@ jobs:
           metal_root = tc.resolve_metal_dir(install_dir)
           if metal_root is None:
               raise SystemExit("Installer returned success, but metal.exe was not found. Verify this is Metal Developer Tools for Windows.")
+          # metal_tool() resolves its root through NSPB_METAL_DIR / toolchain.json /
+          # standard locations. Point it at the just-installed folder before probing.
+          os.environ["NSPB_METAL_DIR"] = str(metal_root)
           metal = tc.metal_tool("metal", sdk="iphoneos")
           metallib = tc.metal_tool("metallib", sdk="iphoneos")
           if metal is None or metallib is None:
