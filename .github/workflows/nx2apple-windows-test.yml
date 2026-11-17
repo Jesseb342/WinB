@@ -418,6 +418,13 @@ jobs:
           path: .venv
           key: nx2apple-python-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('nx2apple/frontend-qt/requirements.txt', '.github/workflows/nx2apple-windows-test.yml') }}
 
+      - name: Restore cached NX2Apple engine
+        id: engine-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nx2apple/engine
+          key: nx2apple-engine-${{ runner.os }}-${{ hashFiles('nx2apple/.upstream-ref', 'nx2apple/patches/**', 'nx2apple/tools/engine.py') }}
+
       - name: Sync NX2Apple engine and patch queue
         working-directory: nx2apple
         shell: bash
@@ -426,6 +433,13 @@ jobs:
           python tools/engine.py -q sync
           echo "Engine upstream pin: $(cat .upstream-ref)"
           echo "Engine sync complete."
+
+      - name: Save NX2Apple engine cache
+        if: ${{ success() && steps.engine-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: nx2apple/engine
+          key: nx2apple-engine-${{ runner.os }}-${{ hashFiles('nx2apple/.upstream-ref', 'nx2apple/patches/**', 'nx2apple/tools/engine.py') }}
 
       - name: Restore cached NuGet packages
         id: nuget-cache
