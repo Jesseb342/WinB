@@ -63,6 +63,36 @@ jobs:
           echo "NX2Apple commit: $(git -C nx2apple rev-parse HEAD)"
           echo "NX2Apple commit: $(git -C nx2apple rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Validate required secrets before toolchain setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GAME_URL:-}" || -z "${KEYS_BASE64:-}" ]]; then
+            echo "::error::Add the Game_URL and Keys_URL repository secrets (same values used by Wiz)."
+            exit 1
+          fi
+          case "$CONTENT_SELECTION" in
+            "Base game + update (no DLC)"|"Base game + update + DLC")
+              if [[ -z "${UPDATE_URL:-}" ]]; then
+                echo "::error::The selected content needs the Update_URL repository secret."
+                exit 1
+              fi
+              ;;
+          esac
+          case "$CONTENT_SELECTION" in
+            "Base game + DLC (no update)"|"Base game + update + DLC")
+              if [[ -z "${DLC_URL:-}" ]]; then
+                echo "::error::The selected content needs the DLC_URL repository secret."
+                exit 1
+              fi
+              ;;
+          esac
+          if [[ -z "${METAL_TOOLS_URL:-}" || -z "${METAL_TOOLS_SHA256:-}" ]]; then
+            echo "::error::Add MetalTools_URL (private direct ZIP URL) and MetalTools_SHA256 (ZIP checksum)."
+            echo "::error::Apple gates this download behind a Developer account; the Windows runner cannot fetch it itself."
+            exit 1
+          fi
+
       - name: Set up Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -120,8 +150,8 @@ jobs:
           set -euo pipefail
 
           TOOL_DIR="engine/dm/gfx/tools/spirv_cross_bin"
-          TAG="$(sed -n 's/^TAG=\\([^ ]*\\).*/\\1/p' "$TOOL_DIR/build.sh")"
-          COMMIT="$(sed -n 's/^COMMIT=\\([^ ]*\\).*/\\1/p' "$TOOL_DIR/build.sh")"
+          TAG="$(sed -n 's/^TAG=\([^ ]*\).*/\1/p' "$TOOL_DIR/build.sh")"
+          COMMIT="$(sed -n 's/^COMMIT=\([^ ]*\).*/\1/p' "$TOOL_DIR/build.sh")"
           if [[ -z "$TAG" || -z "$COMMIT" ]]; then
             echo "::error::Could not read the pinned SPIRV-Cross tag/commit from $TOOL_DIR/build.sh"
             exit 1
@@ -149,17 +179,6 @@ jobs:
           "$TOOL_DIR/spirv-cross.exe" --revision
           echo "NSPB_SPIRV_CROSS=$GITHUB_WORKSPACE/nx2apple/$TOOL_DIR/spirv-cross.exe" >> "$GITHUB_ENV"
 
-      - name: Check for the Apple Metal tools download
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${METAL_TOOLS_URL:-}" || -z "${METAL_TOOLS_SHA256:-}" ]]; then
-            echo "::error::This Windows build needs Apple's Metal Developer Tools for Windows ZIP."
-            echo "::error::Add repository secrets MetalTools_URL (direct ZIP download URL) and MetalTools_SHA256 (the ZIP's SHA-256)."
-            echo "::error::Download the ZIP from Apple's Developer Downloads while signed in; do not commit or publish the tools."
-            exit 1
-          fi
-
       - name: Install Apple Metal Developer Tools for Windows
         working-directory: nx2apple/frontend-qt
         shell: bash
@@ -180,7 +199,11 @@ jobs:
           archive = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools-windows.zip"
           print("Downloading the Apple Metal tools archive from the configured private URL...")
           urllib.request.urlretrieve(url, archive)
-          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          digest = hashlib.sha256()
+          with archive.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          actual = digest.hexdigest()
           if actual != expected:
               raise SystemExit(f"Metal tools SHA-256 mismatch: got {actual}, expected {expected}")
 
@@ -272,7 +295,7 @@ jobs:
           import sys
           from pathlib import Path
 
-          encoded = re.sub(r"\\s+", "", os.environ["KEYS_BASE64"].strip())
+          encoded = re.sub(r"\s+", "", os.environ["KEYS_BASE64"].strip())
           try:
               decoded = base64.b64decode(encoded, validate=True)
           except Exception as exc:
