@@ -88,7 +88,7 @@ jobs:
               ;;
           esac
           if [[ -z "${METAL_TOOLS_URL:-}" || -z "${METAL_TOOLS_SHA256:-}" ]]; then
-            echo "::error::Add MetalTools_URL (private direct ZIP URL) and MetalTools_SHA256 (ZIP checksum)."
+            echo "::error::Add MetalTools_URL (private direct EXE URL) and MetalTools_SHA256 (EXE checksum)."
             echo "::error::Apple gates this download behind a Developer account; the Windows runner cannot fetch it itself."
             exit 1
           fi
@@ -187,28 +187,69 @@ jobs:
           python - <<'PY'
           import hashlib
           import os
+          import subprocess
           import urllib.request
           from pathlib import Path
-          from nspb_qt.win import fetch
+          from nspb_qt.win import toolchain as tc
 
           url = os.environ["METAL_TOOLS_URL"].strip()
           expected = os.environ["METAL_TOOLS_SHA256"].strip().lower()
           if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
               raise SystemExit("MetalTools_SHA256 must be a 64-character hexadecimal SHA-256.")
 
-          archive = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools-windows.zip"
-          print("Downloading the Apple Metal tools archive from the configured private URL...")
-          urllib.request.urlretrieve(url, archive)
+          installer = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools-windows.exe"
+          print("Downloading Apple's Metal Developer Tools for Windows installer...")
+          urllib.request.urlretrieve(url, installer)
+
           digest = hashlib.sha256()
-          with archive.open("rb") as stream:
+          with installer.open("rb") as stream:
               for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                   digest.update(chunk)
           actual = digest.hexdigest()
           if actual != expected:
               raise SystemExit(f"Metal tools SHA-256 mismatch: got {actual}, expected {expected}")
 
-          fetch.install_metal_from_zip(archive, log=print)
-          archive.unlink(missing_ok=True)
+          # Apple's Windows installer supports /S for silent installation and /D= for
+          # the destination directory. RUNNER_TEMP has no spaces, and /D= must be last.
+          install_dir = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools"
+          install_dir.mkdir(parents=True, exist_ok=True)
+          print(f"Installing Metal Developer Tools silently into {install_dir}...")
+          result = subprocess.run(
+              [str(installer), "/S", f"/D={install_dir}"],
+              capture_output=True,
+              text=True,
+              errors="replace",
+              timeout=900,
+          )
+          if result.returncode != 0:
+              if result.stdout:
+                  print(result.stdout[-4000:])
+              if result.stderr:
+                  print(result.stderr[-4000:])
+              raise SystemExit(f"Apple Metal tools installer failed with exit code {result.returncode}.")
+
+          metal_root = tc.resolve_metal_dir(install_dir)
+          if metal_root is None:
+              raise SystemExit(
+                  "Installer returned success, but metal.exe was not found under the install folder. "
+                  "Check that the downloaded EXE is Metal Developer Tools for Windows, not Metal Shader Converter."
+              )
+
+          os.environ["NSPB_METAL_DIR"] = str(metal_root)
+          metal = tc.metal_tool("metal", sdk="iphoneos")
+          metallib = tc.metal_tool("metallib", sdk="iphoneos")
+          if metal is None or metallib is None:
+              raise SystemExit(
+                  f"Metal installation is incomplete: metal.exe={metal}, metallib.exe={metallib}"
+              )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"NSPB_METAL_DIR={metal_root}\n")
+
+          print(f"Metal compiler: {metal}")
+          print(f"Metal library tool: {metallib}")
+          print(f"Metal Developer Tools installed at: {metal_root}")
+          installer.unlink(missing_ok=True)
           PY
 
       - name: Validate the Windows cross-toolchain
