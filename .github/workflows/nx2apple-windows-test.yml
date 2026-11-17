@@ -826,6 +826,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Windows selects msyh.ttc as the standard CJK font. fontTools needs
+          # an explicit face index for TTC files; select face 0 while leaving
+          # ordinary TTF/OTF inputs on the normal auto-detect path.
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("engine/dm/tools/make_shared_fonts.py")
+          text = source.read_text(encoding="utf-8")
+          old = "f = TTFont(src)"
+          new = 'f = TTFont(src, fontNumber=0 if open(src, "rb").read(4) == b"ttcf" else -1)'
+          if text.count(old) != 1:
+              raise SystemExit(f"Expected exactly one TTFont(src) call in {source}; found {text.count(old)}")
+          source.write_text(text.replace(old, new), encoding="utf-8")
+          print("Patched make_shared_fonts.py to select TTC face 0 on Windows.")
+          PY
+
           # The Windows process-group wrapper otherwise kills compiler descendants
           # only 5 seconds after own_compilers.py exits. Metal can still be flushing
           # completed shader outputs, so give the child job 90 seconds to drain.
