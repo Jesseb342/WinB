@@ -225,6 +225,29 @@ jobs:
           if expected and (len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)):
               raise SystemExit("If supplied, MetalTools_SHA256 must be a 64-character hexadecimal SHA-256.")
 
+          # Convert ordinary Google Drive viewer/share URLs into the current
+          # download endpoint before fetching. A /file/d/.../view URL returns
+          # the 100+ KB Drive viewer HTML, not the executable.
+          parsed_input = urllib.parse.urlparse(url)
+          input_host = (parsed_input.hostname or "").lower()
+          if input_host.endswith("google.com") or input_host.endswith("googleusercontent.com"):
+              query = urllib.parse.parse_qs(parsed_input.query)
+              file_id = query.get("id", [None])[0]
+              match = re.search(r"/file/d/([^/]+)", parsed_input.path)
+              if match:
+                  file_id = match.group(1)
+              if file_id:
+                  download_query = {"id": file_id, "export": "download", "confirm": "t"}
+                  resource_key = query.get("resourcekey", [None])[0]
+                  if resource_key:
+                      download_query["resourcekey"] = resource_key
+                  url = "https://drive.usercontent.google.com/download?" + urllib.parse.urlencode(download_query)
+                  print("Normalized Google Drive share/view URL to its direct file-download endpoint.")
+              elif input_host == "drive.usercontent.google.com" and "confirm" not in query:
+                  query["confirm"] = ["t"]
+                  url = urllib.parse.urlunparse(parsed_input._replace(query=urllib.parse.urlencode(query, doseq=True)))
+                  print("Added Google Drive download confirmation parameter.")
+
           cookies = http.cookiejar.CookieJar()
           opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
           request_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"}
