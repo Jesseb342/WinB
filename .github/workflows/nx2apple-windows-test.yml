@@ -39,6 +39,8 @@ jobs:
       KEYS_BASE64: ${{ secrets.Keys_URL }}
       METAL_TOOLS_URL: ${{ secrets.Metal_URL || secrets.MetalTools_URL }}
       METAL_TOOLS_SHA256: ${{ secrets.MetalTools_SHA256 }}
+      # NX2Apple logs Unicode symbols during extraction; force UTF-8 for piped Python output on Windows.
+      PYTHONUTF8: "1"
       CONTENT_SELECTION: ${{ inputs.content }}
 
     steps:
