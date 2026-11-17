@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       content:
-        description: Game content to include (Echoes of Wisdom test)
+        description: Game content to include (Sea of Stars test)
         type: choice
         required: true
         default: Base game + update (no DLC)
@@ -41,6 +41,11 @@ jobs:
       METAL_TOOLS_SHA256: ${{ secrets.MetalTools_SHA256 }}
       # NX2Apple logs Unicode symbols during extraction; force UTF-8 for piped Python output on Windows.
       PYTHONUTF8: "1"
+      # Prevent persistent MSBuild/.NET worker servers from surviving the extractor build.
+      MSBUILDDISABLENODEREUSE: "1"
+      DOTNET_CLI_USE_MSBUILD_SERVER: "0"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      MSBUILD_TELEMETRY_OPTOUT: "1"
       CONTENT_SELECTION: ${{ inputs.content }}
 
     steps:
@@ -428,7 +433,7 @@ jobs:
           set -euo pipefail
           python -m nspb_qt.win.doctor 2>&1 | tee "$RUNNER_TEMP/nx2apple-toolchain-report.txt"
 
-      - name: Download Echoes of Wisdom inputs and decode prod.keys
+      - name: Download Sea of Stars inputs and decode prod.keys
         shell: bash
         run: |
           set -euo pipefail
@@ -594,6 +599,91 @@ jobs:
         with:
           path: ${{ runner.temp }}/nx2apple-inputs/game-archive
           key: nx2apple-game-archive-${{ steps.game-cache-key.outputs.url_hash }}
+
+      - name: Prebuild nx_extract outside the driver process group
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+          from nspb_qt.win import toolchain as tc
+
+          repo = Path(os.environ["NSPB_REPO"])
+          project = repo / "dm/tools/nx_extract/nx_extract.csproj"
+          if not project.is_file():
+              raise SystemExit(f"NX2Apple extractor project is missing: {project}")
+
+          dotnet_root = tc.dotnet_dir()
+          if dotnet_root is None:
+              raise SystemExit(".NET SDK was installed but its dotnet.exe could not be located.")
+          dotnet = dotnet_root / "dotnet.exe"
+
+          output = Path(os.environ["RUNNER_TEMP"]) / "nx-extract-prebuilt"
+          artifacts = Path(os.environ["RUNNER_TEMP"]) / "nx-extract-build-artifacts"
+          shutil.rmtree(output, ignore_errors=True)
+          shutil.rmtree(artifacts, ignore_errors=True)
+          output.mkdir(parents=True, exist_ok=True)
+
+          extra = tc.csc_tool_args()
+          if not any(arg.startswith("-p:UseSharedCompilation=") for arg in extra):
+              extra.append("-p:UseSharedCompilation=false")
+
+          command = [
+              str(dotnet), "build", str(project), "-c", "Release",
+              "-p:PublishAot=false", *extra,
+              "--artifacts-path", str(artifacts),
+              "-o", str(output), "-v", "quiet", "-nologo", "-nr:false",
+          ]
+          env = os.environ.copy()
+          env.update({
+              "MSBUILDDISABLENODEREUSE": "1",
+              "DOTNET_CLI_USE_MSBUILD_SERVER": "0",
+              "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+              "MSBUILD_TELEMETRY_OPTOUT": "1",
+          })
+
+          tools = tc.tools_dir()
+          tools.mkdir(parents=True, exist_ok=True)
+          build_log = tools / "nx_extract_build.log"
+          print("Building nx_extract separately so the Windows driver does not own MSBuild worker processes.")
+          print("Command:", subprocess.list2cmdline(command))
+          with build_log.open("w", encoding="utf-8", errors="replace") as log:
+              result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+          print(build_log.read_text(encoding="utf-8", errors="replace")[-12000:])
+          if result.returncode:
+              raise SystemExit(f"nx_extract prebuild failed with exit code {result.returncode}; see {build_log}")
+
+          built_exe = output / "nx_extract.exe"
+          if not built_exe.is_file():
+              raise SystemExit(f".NET build succeeded but did not produce {built_exe}")
+
+          # The Windows driver checks this bundled location before attempting its own
+          # process-group-managed dotnet build. It also verifies the embedded source hash.
+          bundled = repo / "dm/tools/nx_extract_bin"
+          bundled.mkdir(parents=True, exist_ok=True)
+          for item in output.iterdir():
+              target = bundled / item.name
+              if item.is_dir():
+                  shutil.copytree(item, target, dirs_exist_ok=True)
+              else:
+                  shutil.copy2(item, target)
+
+          probe = subprocess.run(
+              [str(bundled / "nx_extract.exe"), "--source-sha"],
+              capture_output=True, text=True, errors="replace", env=env, timeout=60,
+          )
+          if probe.returncode or not probe.stdout.strip():
+              raise SystemExit(
+                  "Prebuilt nx_extract failed its startup/source-hash probe: "
+                  + (probe.stderr or probe.stdout or f"exit {probe.returncode}")
+              )
+          print("Prebuilt nx_extract is ready:", bundled / "nx_extract.exe")
+          print("Embedded source SHA:", probe.stdout.strip())
+          PY
 
       - name: Build unsigned iOS IPA with NX2Apple Windows driver
         working-directory: nx2apple/frontend-qt
