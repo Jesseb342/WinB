@@ -1,0 +1,362 @@
+name: NX2Apple Windows IPA test
+
+on:
+  workflow_dispatch:
+    inputs:
+      content:
+        description: Game content to include (Echoes of Wisdom test)
+        type: choice
+        required: true
+        default: Base game + update (no DLC)
+        options:
+          - Base game only
+          - Base game + update (no DLC)
+          - Base game + DLC (no update)
+          - Base game + update + DLC
+      upload_ipa:
+        description: Upload the IPA as an Actions artifact. On a public repo, anyone with read access may be able to download it.
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nx2apple-windows-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-ipa:
+    name: Build iOS IPA on Windows (NX2Apple)
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      NSPB_REPO: ${{ github.workspace }}/nx2apple
+      GAME_URL: ${{ secrets.Game_URL }}
+      UPDATE_URL: ${{ secrets.Update_URL }}
+      DLC_URL: ${{ secrets.DLC_URL }}
+      KEYS_BASE64: ${{ secrets.Keys_URL }}
+      METAL_TOOLS_URL: ${{ secrets.MetalTools_URL }}
+      METAL_TOOLS_SHA256: ${{ secrets.MetalTools_SHA256 }}
+      CONTENT_SELECTION: ${{ inputs.content }}
+
+    steps:
+      - name: Checkout WinB workflow repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout latest NX2Apple
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LNPANDY/NX2Apple
+          ref: main
+          path: nx2apple
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Record NX2Apple revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "NX2Apple commit: $(git -C nx2apple rev-parse HEAD)"
+          echo "NX2Apple commit: $(git -C nx2apple rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: nx2apple/frontend-qt/requirements.txt
+
+      - name: Set up .NET SDK 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install NX2Apple Windows build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # These are the Windows wheels and versions used by NX2Apple's own packaging workflow.
+          python -m pip install \
+            lz4==4.4.5 \
+            capstone==5.0.9 \
+            unicorn==2.1.4 \
+            fonttools==4.68.0 \
+            zbic==1.0.1.post1 \
+            backports.zstd==1.8.0 \
+            nsz==5.0.0 \
+            pillow
+
+      - name: Sync NX2Apple engine and patch queue
+        working-directory: nx2apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/engine.py -q sync
+          echo "Engine upstream pin: $(cat .upstream-ref)"
+          echo "Engine sync complete."
+
+      - name: Install LLVM-MinGW, iPhoneOS SDK and zstd
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from nspb_qt.win import fetch, sdk_fetch
+
+          fetch.install_llvm(log=print)
+          sdk_fetch.install_sdk(log=print)
+          fetch.install_zstd(log=print)
+          PY
+
+      - name: Build the Windows SPIRV-Cross tool for the synced engine
+        working-directory: nx2apple
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL_DIR="engine/dm/gfx/tools/spirv_cross_bin"
+          TAG="$(sed -n 's/^TAG=\\([^ ]*\\).*/\\1/p' "$TOOL_DIR/build.sh")"
+          COMMIT="$(sed -n 's/^COMMIT=\\([^ ]*\\).*/\\1/p' "$TOOL_DIR/build.sh")"
+          if [[ -z "$TAG" || -z "$COMMIT" ]]; then
+            echo "::error::Could not read the pinned SPIRV-Cross tag/commit from $TOOL_DIR/build.sh"
+            exit 1
+          fi
+
+          git clone --quiet --depth 1 --branch "$TAG" https://github.com/KhronosGroup/SPIRV-Cross.git spirv-cross-src
+          ACTUAL="$(git -C spirv-cross-src rev-parse HEAD)"
+          if [[ "$ACTUAL" != "$COMMIT" ]]; then
+            echo "::error::SPIRV-Cross checkout $ACTUAL does not match expected commit $COMMIT"
+            exit 1
+          fi
+
+          cmake -S spirv-cross-src -B spirv-cross-build \
+            -DSPIRV_CROSS_ENABLE_TESTS=OFF \
+            -DSPIRV_CROSS_SKIP_INSTALL=ON
+          cmake --build spirv-cross-build --config Release --target spirv-cross --parallel
+
+          SPV_EXE="$(find spirv-cross-build -type f -name 'spirv-cross.exe' | head -1)"
+          if [[ -z "$SPV_EXE" || ! -f "$SPV_EXE" ]]; then
+            echo "::error::Windows SPIRV-Cross executable was not produced."
+            exit 1
+          fi
+
+          cp "$SPV_EXE" "$TOOL_DIR/spirv-cross.exe"
+          "$TOOL_DIR/spirv-cross.exe" --revision
+          echo "NSPB_SPIRV_CROSS=$GITHUB_WORKSPACE/nx2apple/$TOOL_DIR/spirv-cross.exe" >> "$GITHUB_ENV"
+
+      - name: Check for the Apple Metal tools download
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${METAL_TOOLS_URL:-}" || -z "${METAL_TOOLS_SHA256:-}" ]]; then
+            echo "::error::This Windows build needs Apple's Metal Developer Tools for Windows ZIP."
+            echo "::error::Add repository secrets MetalTools_URL (direct ZIP download URL) and MetalTools_SHA256 (the ZIP's SHA-256)."
+            echo "::error::Download the ZIP from Apple's Developer Downloads while signed in; do not commit or publish the tools."
+            exit 1
+          fi
+
+      - name: Install Apple Metal Developer Tools for Windows
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import os
+          import urllib.request
+          from pathlib import Path
+          from nspb_qt.win import fetch
+
+          url = os.environ["METAL_TOOLS_URL"].strip()
+          expected = os.environ["METAL_TOOLS_SHA256"].strip().lower()
+          if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+              raise SystemExit("MetalTools_SHA256 must be a 64-character hexadecimal SHA-256.")
+
+          archive = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools-windows.zip"
+          print("Downloading the Apple Metal tools archive from the configured private URL...")
+          urllib.request.urlretrieve(url, archive)
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if actual != expected:
+              raise SystemExit(f"Metal tools SHA-256 mismatch: got {actual}, expected {expected}")
+
+          fetch.install_metal_from_zip(archive, log=print)
+          archive.unlink(missing_ok=True)
+          PY
+
+      - name: Validate the Windows cross-toolchain
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m nspb_qt.win.doctor 2>&1 | tee "$RUNNER_TEMP/nx2apple-toolchain-report.txt"
+
+      - name: Download Echoes of Wisdom inputs and decode prod.keys
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORK="$RUNNER_TEMP/nx2apple-inputs"
+          GAME_DIR="$WORK/GameFiles"
+          mkdir -p "$GAME_DIR"
+
+          download_file() {
+            local url="$1"
+            local output="$2"
+            local temporary="$output.part"
+
+            if [[ -z "${url:-}" ]]; then
+              echo "::error::A required game download URL secret is empty."
+              exit 1
+            fi
+
+            echo "Downloading $(basename "$output")..."
+            curl --fail --location --show-error --progress-bar \
+              --retry 3 --retry-delay 5 --connect-timeout 30 \
+              --output "$temporary" "$url"
+
+            if [[ ! -s "$temporary" ]]; then
+              echo "::error::Downloaded file is empty: $(basename "$output")"
+              exit 1
+            fi
+
+            mv "$temporary" "$output"
+            ls -lh "$output"
+          }
+
+          download_file "$GAME_URL" "$GAME_DIR/game.nsp"
+
+          case "$CONTENT_SELECTION" in
+            "Base game only")
+              INCLUDE_UPDATE=false
+              INCLUDE_DLC=false
+              ;;
+            "Base game + update (no DLC)")
+              INCLUDE_UPDATE=true
+              INCLUDE_DLC=false
+              ;;
+            "Base game + DLC (no update)")
+              INCLUDE_UPDATE=false
+              INCLUDE_DLC=true
+              ;;
+            "Base game + update + DLC")
+              INCLUDE_UPDATE=true
+              INCLUDE_DLC=true
+              ;;
+            *)
+              echo "::error::Unknown content selection: $CONTENT_SELECTION"
+              exit 1
+              ;;
+          esac
+
+          if [[ "$INCLUDE_UPDATE" == true ]]; then
+            download_file "$UPDATE_URL" "$GAME_DIR/update.nsp"
+          fi
+          if [[ "$INCLUDE_DLC" == true ]]; then
+            download_file "$DLC_URL" "$GAME_DIR/dlc.nsp"
+          fi
+
+          if [[ -z "${KEYS_BASE64:-}" ]]; then
+            echo "::error::The Keys_URL secret is empty."
+            exit 1
+          fi
+
+          python - "$WORK/prod.keys" <<'PY'
+          import base64
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          encoded = re.sub(r"\\s+", "", os.environ["KEYS_BASE64"].strip())
+          try:
+              decoded = base64.b64decode(encoded, validate=True)
+          except Exception as exc:
+              raise SystemExit(f"Invalid Base64 encryption keys: {exc}")
+          if not decoded:
+              raise SystemExit("Decoded prod.keys is empty.")
+          output = Path(sys.argv[1])
+          output.write_bytes(decoded)
+          output.chmod(0o600)
+          print(f"Decoded prod.keys ({len(decoded):,} bytes).")
+          PY
+
+          echo "Game input files prepared. Keys are not included in artifacts."
+
+      - name: Build unsigned iOS IPA with NX2Apple Windows driver
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m nspb_qt.win.driver \
+            "$RUNNER_TEMP/nx2apple-inputs/GameFiles" \
+            -k "$RUNNER_TEMP/nx2apple-inputs/prod.keys" \
+            --platform ios 2>&1 | tee "$RUNNER_TEMP/nx2apple-windows-build.log"
+
+      - name: Collect generated IPA
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/nx2apple-ipa-output"
+          mkdir -p "$OUT"
+
+          mapfile -d '' IPA_FILES < <(
+            find "$GITHUB_WORKSPACE/nx2apple" "$RUNNER_TEMP" \
+              -type f -iname '*.ipa' \
+              -not -path "$RUNNER_TEMP/nx2apple-inputs/*" \
+              -print0
+          )
+
+          if (( ${#IPA_FILES[@]} == 0 )); then
+            echo "::error::The driver returned success, but no IPA was found in the workspace or runner temp folder."
+            exit 1
+          fi
+
+          for ipa in "${IPA_FILES[@]}"; do
+            cp "$ipa" "$OUT/$(basename "$ipa")"
+            echo "Collected IPA: $(basename "$ipa")"
+          done
+
+          echo "Found ${#IPA_FILES[@]} IPA file(s)." >> "$GITHUB_STEP_SUMMARY"
+          echo "IPA output is held on the runner. Upload is controlled by the workflow input." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifact (opt-in)
+        if: ${{ success() && inputs.upload_ipa }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-Windows-IPA
+          path: ${{ runner.temp }}/nx2apple-ipa-output/*.ipa
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Save Windows build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## NX2Apple Windows test"
+            echo
+            echo "- Runner: windows-latest"
+            echo "- NX2Apple revision: $(git -C nx2apple rev-parse HEAD 2>/dev/null || echo unavailable)"
+            echo "- Engine pin: $(cat nx2apple/.upstream-ref 2>/dev/null || echo unavailable)"
+            echo "- Content selection: $CONTENT_SELECTION"
+            echo "- Job status: ${{ job.status }}"
+            echo
+            echo "The IPA is uploaded only when the manual upload_ipa input is enabled."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-Windows-Diagnostics
+          path: |
+            ${{ runner.temp }}/nx2apple-toolchain-report.txt
+            ${{ runner.temp }}/nx2apple-windows-build.log
+          if-no-files-found: warn
+          retention-days: 7
