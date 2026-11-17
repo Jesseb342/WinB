@@ -191,48 +191,117 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import hashlib
+          import http.cookiejar
           import os
+          import re
           import subprocess
+          import urllib.parse
           import urllib.request
+          from html.parser import HTMLParser
           from pathlib import Path
           from nspb_qt.win import toolchain as tc
+
+          class DriveDownloadParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.forms = []
+                  self.anchors = []
+                  self._form = None
+              def handle_starttag(self, tag, attrs):
+                  a = dict(attrs)
+                  if tag == "form":
+                      self._form = {"action": a.get("action", ""), "method": a.get("method", "get").lower(), "fields": {}}
+                  elif tag == "input" and self._form is not None and a.get("name"):
+                      self._form["fields"][a["name"]] = a.get("value", "")
+                  elif tag == "a" and a.get("href"):
+                      self.anchors.append(a["href"])
+              def handle_endtag(self, tag):
+                  if tag == "form" and self._form is not None:
+                      self.forms.append(self._form)
+                      self._form = None
 
           url = os.environ["METAL_TOOLS_URL"].strip()
           expected = os.environ.get("METAL_TOOLS_SHA256", "").strip().lower()
           if expected and (len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)):
               raise SystemExit("If supplied, MetalTools_SHA256 must be a 64-character hexadecimal SHA-256.")
 
+          cookies = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+          request_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"}
+          def fetch(target):
+              req = urllib.request.Request(target, headers=request_headers)
+              return opener.open(req, timeout=120)
+
           installer = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools-windows.exe"
           print("Downloading Apple's Metal Developer Tools for Windows installer...")
-          urllib.request.urlretrieve(url, installer)
+          response = fetch(url)
+          body = response.read()
+          content_type = response.headers.get("Content-Type", "")
+          final_url = response.geturl()
+          print(f"Initial response: HTTP {response.status}, {len(body):,} bytes, content-type={content_type}")
 
-          size = installer.stat().st_size
+          # Google Drive sharing links often return an HTML virus-scan/confirmation
+          # interstitial instead of the file. Parse its download form and replay it
+          # with the same cookie jar rather than treating that HTML as a bad URL.
+          if body.lstrip().lower().startswith((b"<!doctype html", b"<html")) or "text/html" in content_type.lower():
+              parsed_url = urllib.parse.urlparse(final_url)
+              host = (parsed_url.hostname or "").lower()
+              if host.endswith("google.com") or host.endswith("googleusercontent.com") or "drive.google.com" in url.lower():
+                  parser = DriveDownloadParser()
+                  parser.feed(body.decode("utf-8", errors="replace"))
+                  download_target = None
+                  for form in parser.forms:
+                      action = urllib.parse.urljoin(final_url, form["action"])
+                      fields = form["fields"]
+                      if form["method"] == "get" and ("id" in fields or "export" in fields or "confirm" in fields):
+                          download_target = action + ("&" if "?" in action else "?") + urllib.parse.urlencode(fields)
+                          break
+                      if form["method"] == "post" and fields:
+                          data = urllib.parse.urlencode(fields).encode()
+                          req = urllib.request.Request(action, data=data, headers=request_headers)
+                          confirmed = opener.open(req, timeout=120)
+                          body = confirmed.read()
+                          content_type = confirmed.headers.get("Content-Type", "")
+                          final_url = confirmed.geturl()
+                          download_target = None
+                          break
+                  if download_target:
+                      print("Google Drive confirmation form detected; requesting the confirmed download...")
+                      response = fetch(download_target)
+                      body = response.read()
+                      content_type = response.headers.get("Content-Type", "")
+                      final_url = response.geturl()
+                  elif body.lstrip().lower().startswith((b"<!doctype html", b"<html")) or "text/html" in content_type.lower():
+                      # Some Drive pages expose a confirmation URL as an anchor.
+                      for href in parser.anchors:
+                          candidate = urllib.parse.urljoin(final_url, href)
+                          if "export=download" in candidate or "confirm=" in candidate:
+                              print("Google Drive confirmation link detected; following it...")
+                              response = fetch(candidate)
+                              body = response.read()
+                              content_type = response.headers.get("Content-Type", "")
+                              final_url = response.geturl()
+                              break
+
+          print(f"Final download response: {len(body):,} bytes, content-type={content_type}")
+          if len(body) < 1024 * 1024:
+              preview = body[:160].decode("utf-8", errors="replace").replace("\\n", " ")
+              raise SystemExit(
+                  f"Metal download is still not the installer ({len(body):,} bytes). "
+                  f"Response begins: {preview!r}. Check Drive sharing permissions and confirmation page."
+              )
+          installer.write_bytes(body)
           with installer.open("rb") as stream:
               header = stream.read(64)
-          print(f"Downloaded Metal installer size: {size:,} bytes")
           print(f"Downloaded file header (first 32 bytes): {header[:32].hex()}")
-
-          # Reject login pages, HTML error documents, and truncated downloads before
-          # Windows attempts to launch them as executables.
-          if size < 1024 * 1024:
-              raise SystemExit(
-                  "Metal download is unexpectedly small (<1 MiB). Metal_URL may point "
-                  "to an Apple login/error page or an incomplete download, not the installer."
-              )
           if len(header) < 64 or header[:2] != b"MZ":
-              raise SystemExit(
-                  "Metal download is not a Windows PE executable (missing MZ header). "
-                  "Metal_URL must be a direct URL to the downloaded .exe, not a web page."
-              )
+              raise SystemExit("Metal download is not a Windows PE executable (missing MZ header).")
           pe_offset = int.from_bytes(header[0x3C:0x40], "little")
           with installer.open("rb") as stream:
               stream.seek(pe_offset)
               pe_signature = stream.read(4)
           if pe_signature != b"PE\\0\\0":
-              raise SystemExit(
-                  "Metal download has an MZ header but no valid PE signature; "
-                  "the installer download appears damaged or incomplete."
-              )
+              raise SystemExit("Metal download has an MZ header but no valid PE signature.")
 
           digest = hashlib.sha256()
           with installer.open("rb") as stream:
@@ -243,45 +312,29 @@ jobs:
           if expected and actual != expected:
               raise SystemExit(f"Metal tools SHA-256 mismatch: got {actual}, expected {expected}")
           if not expected:
-              print("No pinned checksum supplied; continuing with the HTTPS download and installer-layout validation.")
+              print("No pinned checksum supplied; continuing with PE and installer-layout validation.")
 
-          # Apple's Windows installer supports /S for silent installation and /D= for
-          # the destination directory. RUNNER_TEMP has no spaces, and /D= must be last.
           install_dir = Path(os.environ["RUNNER_TEMP"]) / "metal-developer-tools"
           install_dir.mkdir(parents=True, exist_ok=True)
           print(f"Installing Metal Developer Tools silently into {install_dir}...")
           result = subprocess.run(
               [str(installer), "/S", f"/D={install_dir}"],
-              capture_output=True,
-              text=True,
-              errors="replace",
-              timeout=900,
+              capture_output=True, text=True, errors="replace", timeout=900,
           )
           if result.returncode != 0:
-              if result.stdout:
-                  print(result.stdout[-4000:])
-              if result.stderr:
-                  print(result.stderr[-4000:])
+              if result.stdout: print(result.stdout[-4000:])
+              if result.stderr: print(result.stderr[-4000:])
               raise SystemExit(f"Apple Metal tools installer failed with exit code {result.returncode}.")
 
           metal_root = tc.resolve_metal_dir(install_dir)
           if metal_root is None:
-              raise SystemExit(
-                  "Installer returned success, but metal.exe was not found under the install folder. "
-                  "Check that the downloaded EXE is Metal Developer Tools for Windows, not Metal Shader Converter."
-              )
-
-          os.environ["NSPB_METAL_DIR"] = str(metal_root)
+              raise SystemExit("Installer returned success, but metal.exe was not found. Verify this is Metal Developer Tools for Windows.")
           metal = tc.metal_tool("metal", sdk="iphoneos")
           metallib = tc.metal_tool("metallib", sdk="iphoneos")
           if metal is None or metallib is None:
-              raise SystemExit(
-                  f"Metal installation is incomplete: metal.exe={metal}, metallib.exe={metallib}"
-              )
-
+              raise SystemExit(f"Metal installation is incomplete: metal.exe={metal}, metallib.exe={metallib}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"NSPB_METAL_DIR={metal_root}\n")
-
+              env_file.write(f"NSPB_METAL_DIR={metal_root}\\n")
           print(f"Metal compiler: {metal}")
           print(f"Metal library tool: {metallib}")
           print(f"Metal Developer Tools installed at: {metal_root}")
