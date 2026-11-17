@@ -605,6 +605,39 @@ jobs:
             -k "$RUNNER_TEMP/nx2apple-inputs/prod.keys" \
             --platform ios 2>&1 | tee "$RUNNER_TEMP/nx2apple-windows-build.log"
 
+      - name: Capture full NX2Apple extractor build diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $toolsDir = Join-Path $env:LOCALAPPDATA 'NS Port Builder\tools'
+          $log = Join-Path $toolsDir 'nx_extract_build.log'
+          $diag = Join-Path $env:RUNNER_TEMP 'nx2apple-extra-diagnostics'
+          New-Item -ItemType Directory -Force -Path $diag | Out-Null
+          Write-Host "NX2Apple tools directory: $toolsDir"
+          if (Test-Path -LiteralPath $log) {
+            Copy-Item -LiteralPath $log -Destination (Join-Path $diag 'nx_extract_build.log') -Force
+            $item = Get-Item -LiteralPath $log
+            Write-Host "Full nx_extract build log: $($item.Length) bytes"
+            Write-Host '----- nx_extract_build.log (last 250 lines) -----'
+            Get-Content -LiteralPath $log -Tail 250
+            Write-Host '----- end nx_extract_build.log -----'
+          } else {
+            Write-Host 'nx_extract_build.log was not created at the expected tools path.'
+            Get-ChildItem -LiteralPath $toolsDir -Force -ErrorAction SilentlyContinue |
+              Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize
+          }
+          $extractCache = Get-ChildItem -LiteralPath $toolsDir -Directory -Filter 'nx_extract-*' -ErrorAction SilentlyContinue
+          foreach ($dir in $extractCache) {
+            Write-Host "Extractor cache: $($dir.FullName)"
+            Get-ChildItem -LiteralPath $dir.FullName -Force -ErrorAction SilentlyContinue |
+              Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize
+            Copy-Item -LiteralPath $dir.FullName -Destination (Join-Path $diag $dir.Name) -Recurse -Force
+          }
+          Write-Host '----- dotnet processes remaining after driver -----'
+          Get-CimInstance Win32_Process -Filter "Name = 'dotnet.exe'" -ErrorAction SilentlyContinue |
+            Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | Format-List
+          Write-Host '----- end process snapshot -----'
+
       - name: Collect generated IPA
         if: success()
         shell: bash
@@ -666,5 +699,6 @@ jobs:
           path: |
             ${{ runner.temp }}/nx2apple-toolchain-report.txt
             ${{ runner.temp }}/nx2apple-windows-build.log
+            ${{ runner.temp }}/nx2apple-extra-diagnostics/**
           if-no-files-found: warn
           retention-days: 7
