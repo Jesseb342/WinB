@@ -14,7 +14,7 @@ on:
           - Base game + DLC (no update)
           - Base game + update + DLC
       upload_ipa:
-        description: Upload the IPA and separate RomFS game-data artifacts. On a public repo, anyone with read access may be able to download them.
+        description: Upload the IPA artifact. Reuse the GameFS image from your existing download.
         type: boolean
         required: true
         default: true
@@ -821,7 +821,7 @@ jobs:
           path: nx2apple/engine/dm/tools/nx_extract_bin
           key: nx2apple-nx-extract-${{ runner.os }}-${{ hashFiles('nx2apple/engine/dm/tools/nx_extract/*.cs', 'nx2apple/engine/dm/tools/nx_extract/*.csproj') }}
 
-      - name: Install on-device RomFS file importer
+      - name: Add GameFS importer to the actual Windows UIKit launcher
         working-directory: nx2apple/frontend-qt
         shell: bash
         run: |
@@ -829,100 +829,130 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          source = Path("../engine/dm/ios/Sources/Launcher.swift")
+          source = Path("nspb_qt/win/ios/Launcher.m")
           text = source.read_text(encoding="utf-8")
-          section_marker = "private struct RomFSImportSection: View {"
-          if section_marker not in text:
-              anchor = "private struct LauncherView: View {"
-              if text.count(anchor) != 1:
-                  raise SystemExit(f"Expected one LauncherView declaration in {source}")
-              section = r'''
-          // Imports the separate RomFS image directly into this app's Documents folder.
-          // This avoids requiring a Mac, USB device connection, or the upstream push_romfs.sh script.
-          private struct RomFSImportSection: View {
-              @State private var picking = false
-              @State private var copying = false
-              @State private var note = ""
+          if "#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>" not in text:
+              text = text.replace("#import <UIKit/UIKit.h>",
+                                  "#import <UIKit/UIKit.h>\n#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>", 1)
 
-              var body: some View {
-                  Section("Game data") {
-                      Button("Choose RomFS.img…") { picking = true }
-                          .disabled(copying)
-                      if copying {
-                          HStack {
-                              ProgressView()
-                              Text("Copying game data to this iPhone…")
-                          }
-                      }
-                      if !note.isEmpty {
-                          Text(note).font(.footnote).foregroundStyle(.secondary)
-                      }
-                  } footer: {
-                      Text("Choose games/01008C0016544000/romfs.img from the downloaded game-data files. The image is copied into this app; wait for the copy to finish before pressing Play.")
-                  }
-                  .sheet(isPresented: $picking) {
-                      DocumentPicker(types: [.data]) { url in
-                          picking = false
-                          importImage(url)
-                      } onCancel: {
-                          picking = false
-                      }
-                  }
-              }
+          old = """@interface NspbLauncherVC : UIViewController
+          @property (strong) NspbModel *m;
+          @property (copy) void (^play)(void);
+          @end"""
+          new = """@interface NspbLauncherVC : UIViewController <UIDocumentPickerDelegate>
+          @property (strong) NspbModel *m;
+          @property (copy) void (^play)(void);
+          @property (strong) UIButton *romfsButton;
+          @property (strong) UILabel *romfsStatus;
+          @property BOOL importingRomFS;
+          - (void)chooseRomFS;
+          @end"""
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif "UIDocumentPickerDelegate" not in text or "romfsButton" not in text:
+              raise SystemExit("Windows launcher interface did not match the expected source.")
 
-              private func importImage(_ url: URL) {
-                  guard url.lastPathComponent.lowercased() == "romfs.img" else {
-                      note = "Please select the romfs.img file, not the containing folder or README."
-                      return
-                  }
-                  copying = true
-                  note = "Copying game data…"
-                  DispatchQueue.global(qos: .userInitiated).async {
-                      let access = url.startAccessingSecurityScopedResource()
-                      defer { if access { url.stopAccessingSecurityScopedResource() } }
-                      let files = FileManager.default
-                      let documents = files.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                      let temporary = documents.appendingPathComponent("romfs.img.importing")
-                      let destination = documents.appendingPathComponent("romfs.img")
-                      do {
-                          try? files.removeItem(at: temporary)
-                          try files.copyItem(at: url, to: temporary)
-                          let attributes = try files.attributesOfItem(atPath: temporary.path)
-                          guard let size = attributes[.size] as? NSNumber, size.int64Value > 0 else {
-                              throw NSError(domain: "RomFSImport", code: 1,
-                                            userInfo: [NSLocalizedDescriptionKey: "The selected image is empty."])
-                          }
-                          if files.fileExists(atPath: destination.path) {
-                              try files.removeItem(at: destination)
-                          }
-                          try files.moveItem(at: temporary, to: destination)
-                          DispatchQueue.main.async {
-                              copying = false
-                              note = "Game data copied (\(ByteCountFormatter.string(fromByteCount: size.int64Value, countStyle: .file))). Tap Play to start."
-                          }
-                      } catch {
-                          try? files.removeItem(at: temporary)
-                          DispatchQueue.main.async {
-                              copying = false
-                              note = "Could not copy game data: \(error.localizedDescription)"
-                          }
-                      }
-                  }
+          methods = r'''
+          - (void)chooseRomFS {
+              if (self.importingRomFS) return;
+              UIDocumentPickerViewController *picker =
+                  [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+              picker.delegate = self;
+              picker.allowsMultipleSelection = NO;
+              [self presentViewController:picker animated:YES completion:nil];
+          }
+
+          - (void)documentPicker:(UIDocumentPickerViewController *)controller
+                didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+              NSURL *sourceURL = urls.firstObject;
+              if (!sourceURL) return;
+              if (![sourceURL.lastPathComponent.lowercaseString isEqualToString:@"romfs.img"]) {
+                  self.romfsStatus.text = @"Select the romfs.img file from the Game-Data download.";
+                  return;
               }
+              self.importingRomFS = YES;
+              self.romfsButton.enabled = NO;
+              self.romfsStatus.text = @"Importing GameFS… keep the app open.";
+              dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                  BOOL access = [sourceURL startAccessingSecurityScopedResource];
+                  NSError *error = nil;
+                  NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+                  NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
+                                                                       inDomains:NSUserDomainMask].firstObject;
+                  NSURL *temporary = [documents URLByAppendingPathComponent:@"romfs.img.importing"];
+                  NSURL *destination = [documents URLByAppendingPathComponent:@"romfs.img"];
+                  [NSFileManager.defaultManager removeItemAtURL:temporary error:nil];
+                  [coordinator coordinateReadingItemAtURL:sourceURL options:0 error:&error
+                                                byAccessor:^(NSURL *readURL) {
+                      NSError *copyError = nil;
+                      [NSFileManager.defaultManager copyItemAtURL:readURL toURL:temporary error:&copyError];
+                      if (copyError) error = copyError;
+                  }];
+                  if (access) [sourceURL stopAccessingSecurityScopedResource];
+                  if (!error) {
+                      NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:temporary.path error:&error];
+                      if (!error && [attrs[NSFileSize] unsignedLongLongValue] == 0)
+                          error = [NSError errorWithDomain:@"NX2Apple.GameFS" code:1
+                                                   userInfo:@{NSLocalizedDescriptionKey:@"The selected image is empty."}];
+                  }
+                  if (!error) {
+                      [NSFileManager.defaultManager removeItemAtURL:destination error:nil];
+                      [NSFileManager.defaultManager moveItemAtURL:temporary toURL:destination error:&error];
+                  }
+                  if (error) [NSFileManager.defaultManager removeItemAtURL:temporary error:nil];
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                      self.importingRomFS = NO;
+                      self.romfsButton.enabled = YES;
+                      if (error) {
+                          self.romfsStatus.text = [NSString stringWithFormat:@"Import failed: %@", error.localizedDescription];
+                      } else {
+                          NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:destination.path error:nil];
+                          unsigned long long bytes = [attrs[NSFileSize] unsignedLongLongValue];
+                          NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)bytes
+                                                                         countStyle:NSByteCountFormatterCountStyleFile];
+                          self.romfsStatus.text = [NSString stringWithFormat:@"GameFS imported (%@). Tap Play.", size];
+                          fprintf(stderr, "launcher: GameFS imported to Documents/romfs.img (%llu bytes)\\n", bytes);
+                      }
+                  });
+              });
           }
 
           '''
-              text = text.replace(anchor, section + anchor, 1)
-          if "RomFSImportSection()" not in text:
-              anchor = "                    CloudSavesSection()"
+          if "- (void)chooseRomFS {" not in text:
+              anchor = "- (void)viewDidLoad {"
               if text.count(anchor) != 1:
-                  raise SystemExit(f"Expected one CloudSavesSection insertion point in {source}")
-              text = text.replace(anchor, "                    RomFSImportSection()\n" + anchor, 1)
-          compile_marker = "RomFSImportSection()"
-          if compile_marker not in text or section_marker not in text:
-              raise SystemExit("RomFS importer patch did not apply completely.")
+                  raise SystemExit("Could not locate launcher viewDidLoad.")
+              text = text.replace(anchor, methods + anchor, 1)
+
+          old_ui = """    [card addArrangedSubview:play];
+              [card setCustomSpacing:20 afterView:ver];"""
+          new_ui = """    [card addArrangedSubview:play];
+
+              UIButtonConfiguration *importCfg = [UIButtonConfiguration borderedButtonConfiguration];
+              importCfg.title = @"Import GameFS";
+              importCfg.buttonSize = UIButtonConfigurationSizeLarge;
+              self.romfsButton = [UIButton buttonWithConfiguration:importCfg
+                  primaryAction:[UIAction actionWithHandler:^(UIAction *__unused action) {
+                      [self chooseRomFS];
+                  }]];
+              [card addArrangedSubview:self.romfsButton];
+              self.romfsStatus = nspb_body(@"Choose romfs.img from your downloaded Game-Data artifact.");
+              self.romfsStatus.textAlignment = NSTextAlignmentCenter;
+              self.romfsStatus.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+              self.romfsStatus.textColor = UIColor.secondaryLabelColor;
+              [self.romfsStatus.widthAnchor constraintLessThanOrEqualToConstant:260].active = YES;
+              [card addArrangedSubview:self.romfsStatus];
+              [card setCustomSpacing:20 afterView:ver];"""
+          if old_ui in text:
+              text = text.replace(old_ui, new_ui, 1)
+          elif "Import GameFS" not in text:
+              raise SystemExit("Could not add the GameFS button to the launcher card.")
+
+          if "Import GameFS" not in text or "UIDocumentPickerViewController" not in text:
+              raise SystemExit("GameFS importer verification failed.")
           source.write_text(text, encoding="utf-8")
-          print("Installed the in-app RomFS image picker and Documents importer.")
+          print("Patched nspb_qt/win/ios/Launcher.m with an iOS Files importer.")
+          print("The selected romfs.img is copied to Documents/romfs.img.")
           PY
 
       - name: Build unsigned iOS IPA with NX2Apple Windows driver
@@ -1032,64 +1062,6 @@ jobs:
 
           echo "Found ${#IPA_FILES[@]} IPA file(s)." >> "$GITHUB_STEP_SUMMARY"
           echo "IPA output is held on the runner. Upload is controlled by the workflow input." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Collect separate RomFS game data
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG="$RUNNER_TEMP/nx2apple-windows-build.log"
-          OUT="$RUNNER_TEMP/nx2apple-game-data-output"
-          DEST="$OUT/games/01008C0016544000"
-          mkdir -p "$DEST"
-
-          # NX2Apple prints the exact extracted image path when --romfs separate is active.
-          ROMFS_IMAGE="$(sed -n 's/.*game files: separate .*image stays at //p' "$LOG" | tail -n 1)"
-          if [[ -z "$ROMFS_IMAGE" || ! -s "$ROMFS_IMAGE" ]]; then
-            echo "::error::NX2Apple did not leave a non-empty separate RomFS image. Expected its 'game files: separate' log entry."
-            echo "RomFS-related build log lines:"
-            grep -iE 'game files:|RomFS.img|romfs' "$LOG" | tail -80 || true
-            exit 1
-          fi
-
-          cp "$ROMFS_IMAGE" "$DEST/romfs.img"
-          SIZE="$(wc -c < "$DEST/romfs.img" | tr -d ' ')"
-          HASH="$(sha256sum "$DEST/romfs.img" | awk '{print $1}')"
-          cat > "$OUT/README.txt" <<'EOF'
-          Sea of Stars — NX2Apple separate game data
-
-          This artifact contains the RomFS image excluded from the slim IPA.
-
-          After installing the updated IPA, open Sea of Stars and find the Game data
-          section. Tap "Choose RomFS.img…" and select:
-          games/01008C0016544000/romfs.img
-
-          The app copies the image into its own Documents folder. Wait for the
-          success message before tapping Play. Allow about 4.1 GB of additional
-          free iPhone storage while importing. The original file can be deleted
-          after the app confirms the copy.
-
-          This image belongs to title ID 01008C0016544000. Do not rename or modify it.
-          EOF
-          echo "Collected RomFS image: $ROMFS_IMAGE"
-          echo "Game data size: $SIZE bytes"
-          echo "Game data SHA-256: $HASH"
-          {
-            echo
-            echo "## Separate game data"
-            echo "- RomFS image: $SIZE bytes"
-            echo "- SHA-256: $HASH"
-            echo "- Artifact folder: games/01008C0016544000/romfs.img"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload separate game-data artifact (opt-in)
-        if: ${{ success() && inputs.upload_ipa }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: NX2Apple-Windows-Game-Data
-          path: ${{ runner.temp }}/nx2apple-game-data-output/**
-          if-no-files-found: error
-          retention-days: 1
 
       - name: Upload IPA artifact (opt-in)
         if: ${{ success() && inputs.upload_ipa }}
