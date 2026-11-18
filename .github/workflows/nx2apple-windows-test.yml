@@ -477,30 +477,19 @@ jobs:
           source = source.replace(marker, setting + marker, 1)
           profile.write_text(source, encoding="utf-8")
 
-          ios = Path("dm/ios/Sources/main.m")
-          ios_source = ios.read_text(encoding="utf-8")
-          old_check = "if (gpu.supportsBCTextureCompression) return NULL;"
-          new_check = "if (gpu.supportsBCTextureCompression || DM_GAME_TEX_BC_CPU) return NULL;"
-          # The regular iOS app checks the GPU here. NX2Apple's framework build
-          # deliberately replaces this with a NULL-returning shim; its separate
-          # launcher handles device compatibility before starting the game.
-          framework_bypass = "const char *front_ios_device_check(void) { return NULL; }"
-          if new_check not in ios_source and framework_bypass not in ios_source:
-              if old_check in ios_source:
-                  ios_source = ios_source.replace(old_check, new_check, 1)
-                  ios.write_text(ios_source, encoding="utf-8")
-              else:
-                  raise SystemExit(
-                      "No recognized iOS device-check implementation in main.m. "
-                      "Expected the standard GPU check or NX2Apple framework shim."
-                  )
-
-          ios_source = ios.read_text(encoding="utf-8")
+          # Current NX2Apple uses dm_profile()->tex_bc_cpu in main.m rather
+          # than the older generated DM_GAME_TEX_BC_CPU macro. Its framework
+          # build also supplies front_ios_device_check() as a NULL shim; the
+          # actual GPU gate is aoc_locate() in main.m.
+          game_parser = Path("dm/games/game.py").read_text(encoding="utf-8")
+          ios_source = Path("dm/ios/Sources/main.m").read_text(encoding="utf-8")
+          nvn_source = Path("dm/gfx/nvn/nvn_mtl.m").read_text(encoding="utf-8")
           checks = {
               "BC decoder source": Path("dm/gfx/tex/nvn_bcdec.c").is_file(),
               "BC decoder header": Path("dm/gfx/tex/nvn_bcdec.h").is_file(),
-              "game profile parser": "DM_GAME_TEX_BC_CPU" in Path("dm/games/game.py").read_text(encoding="utf-8"),
-              "iOS device check allows framework launch": new_check in ios_source or framework_bypass in ios_source,
+              "game profile parser": "tex_bc_cpu" in game_parser and "g.get('tex_bc_cpu'" in game_parser,
+              "iOS startup GPU check uses profile BC fallback": "gpu.supportsBCTextureCompression || dm_profile()->tex_bc_cpu" in ios_source,
+              "Metal renderer permits CPU BC fallback": "!g_dev.supportsBCTextureCompression && !g_bc_cpu" in nvn_source,
               "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\\ton" in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
@@ -508,7 +497,7 @@ jobs:
           missing = [name for name, ok in checks.items() if not ok]
           if missing:
               raise SystemExit("BC fallback verification failed: " + ", ".join(missing))
-          print("Sea of Stars: BC1-BC7 CPU decoder and A15 device-check bypass verified.")
+          print("Sea of Stars: BC1-BC7 CPU decoder, profile parser, iOS startup check and Metal fallback verified.")
           PY
           echo "Sea of Stars BC1-BC7 CPU fallback enabled for A15/A16 devices." >> "$GITHUB_STEP_SUMMARY"
 
