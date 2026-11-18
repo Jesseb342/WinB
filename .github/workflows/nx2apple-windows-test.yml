@@ -1138,6 +1138,41 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Collect generated Sea of Stars GameFS
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUTS="$RUNNER_TEMP/nx2apple-inputs"
+          OUT="$RUNNER_TEMP/nx2apple-gamefs-output"
+          mkdir -p "$OUT"
+          ROMFS="$(find "$INPUTS" -type f -iname 'romfs.img' -size +0c -print -quit)"
+          if [[ -z "$ROMFS" || ! -f "$ROMFS" ]]; then
+            echo "::error::NX2Apple did not produce a non-empty romfs.img. The GameFS artifact cannot be created."
+            echo "Files named romfs.img under the build input directory:"
+            find "$INPUTS" -type f -iname 'romfs.img' -print || true
+            exit 1
+          fi
+          cp "$ROMFS" "$OUT/romfs.img"
+          SIZE="$(du -h "$OUT/romfs.img" | cut -f1)"
+          echo "Collected GameFS image: $ROMFS ($SIZE)"
+          {
+            echo
+            echo "## GameFS artifact"
+            echo "- File: `romfs.img`"
+            echo "- Size: $SIZE"
+            echo "- Source: `$ROMFS`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload GameFS artifact automatically
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-Windows-GameFS
+          path: ${{ runner.temp }}/nx2apple-gamefs-output/romfs.img
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Save Windows build diagnostics
         if: always()
         shell: bash
