@@ -1159,9 +1159,9 @@ jobs:
           {
             echo
             echo "## GameFS artifact"
-            echo "- File: `romfs.img`"
+            echo "- File: romfs.img"
             echo "- Size: $SIZE"
-            echo "- Source: `$ROMFS`"
+            echo "- Source: $ROMFS"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload GameFS artifact automatically
