@@ -13,8 +13,8 @@ on:
           - Base game + update (no DLC)
           - Base game + DLC (no update)
           - Base game + update + DLC
-      upload_ipa:
-        description: Upload the IPA artifact. Reuse the GameFS image from your existing download.
+      bc_cpu_fallback:
+        description: Enable CPU BC texture decoding (required on iPhone 14/A15 and older GPUs).
         type: boolean
         required: true
         default: true
@@ -47,6 +47,7 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       MSBUILD_TELEMETRY_OPTOUT: "1"
       CONTENT_SELECTION: ${{ inputs.content }}
+      BC_CPU_FALLBACK: ${{ inputs.bc_cpu_fallback }}
 
     steps:
       - name: Checkout WinB workflow repository
@@ -450,56 +451,56 @@ jobs:
           echo "Engine upstream pin: $(cat .upstream-ref)"
           echo "Engine sync complete."
 
-      - name: Enable and verify the BC CPU fallback for Sea of Stars (A15)
+      - name: Configure and verify the BC texture fallback for Sea of Stars
         working-directory: nx2apple/engine
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          import os
           from pathlib import Path
 
+          enabled = os.environ.get("BC_CPU_FALLBACK", "true").strip().lower() == "true"
           profile = Path("dm/games/01008C0016544000/game.tsv")
           if not profile.is_file():
               raise SystemExit(f"Sea of Stars profile is missing: {profile}")
           source = profile.read_text(encoding="utf-8")
-          source = "\n".join(
-              line for line in source.splitlines()
-              if not line.lstrip().startswith("tex_bc_cpu\t")
-          ) + "\n"
+          lines = [line for line in source.splitlines()
+                   if not line.lstrip().startswith("tex_bc_cpu\t")]
           marker = "# ---- Shader split"
           if marker not in source:
               raise SystemExit("Sea of Stars profile has no '# ---- Shader split' marker.")
           setting = (
               "# ---- Graphics ----\n"
-              "# iPhone 14 (A15) has no hardware BC texture formats; decode BC1-BC7 on the CPU.\n"
-              "tex_bc_cpu\ton\n\n"
+              "# CPU BC1-BC7 decoding for GPUs without hardware BC texture formats.\n"
+              f"tex_bc_cpu\t{'on' if enabled else 'off'}\n\n"
           )
+          source = "\n".join(lines) + "\n"
           source = source.replace(marker, setting + marker, 1)
           profile.write_text(source, encoding="utf-8")
 
-          # Current NX2Apple uses dm_profile()->tex_bc_cpu in main.m rather
-          # than the older generated DM_GAME_TEX_BC_CPU macro. Its framework
-          # build also supplies front_ios_device_check() as a NULL shim; the
-          # actual GPU gate is aoc_locate() in main.m.
           game_parser = Path("dm/games/game.py").read_text(encoding="utf-8")
           ios_source = Path("dm/ios/Sources/main.m").read_text(encoding="utf-8")
           nvn_source = Path("dm/gfx/nvn/nvn_mtl.m").read_text(encoding="utf-8")
+          actual_setting = "tex_bc_cpu\t" + ("on" if enabled else "off")
           checks = {
               "BC decoder source": Path("dm/gfx/tex/nvn_bcdec.c").is_file(),
               "BC decoder header": Path("dm/gfx/tex/nvn_bcdec.h").is_file(),
               "game profile parser": "tex_bc_cpu" in game_parser and "g.get('tex_bc_cpu'" in game_parser,
-              "iOS startup GPU check uses profile BC fallback": "gpu.supportsBCTextureCompression || dm_profile()->tex_bc_cpu" in ios_source,
-              "Metal renderer permits CPU BC fallback": "!g_dev.supportsBCTextureCompression && !g_bc_cpu" in nvn_source,
-              "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\ton" in profile.read_text(encoding="utf-8"),
+              "iOS startup GPU check uses profile BC setting": "gpu.supportsBCTextureCompression || dm_profile()->tex_bc_cpu" in ios_source,
+              "Metal renderer honors CPU BC setting": "!g_dev.supportsBCTextureCompression && !g_bc_cpu" in nvn_source,
+              "Sea of Stars BC fallback selection": actual_setting in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
               print(f"{'OK' if ok else 'MISSING'}: {name}")
           missing = [name for name, ok in checks.items() if not ok]
           if missing:
-              raise SystemExit("BC fallback verification failed: " + ", ".join(missing))
-          print("Sea of Stars: BC1-BC7 CPU decoder, profile parser, iOS startup check and Metal fallback verified.")
+              raise SystemExit("BC texture verification failed: " + ", ".join(missing))
+          state = "ON" if enabled else "OFF"
+          print(f"Sea of Stars CPU BC texture decoding: {state}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"Sea of Stars CPU BC texture fallback: **{state}**\\n")
           PY
-          echo "Sea of Stars BC1-BC7 CPU fallback enabled for A15/A16 devices." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save NX2Apple engine cache
         if: ${{ success() && steps.engine-cache.outputs.cache-hit != 'true' }}
@@ -1105,36 +1106,29 @@ jobs:
             Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List
           Write-Host '----- end process snapshot -----'
 
-      - name: Collect generated IPA
+      - name: Collect generated Sea of Stars IPA
         if: success()
         shell: bash
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/nx2apple-ipa-output"
+          INPUTS="$RUNNER_TEMP/nx2apple-inputs/GameFiles"
           mkdir -p "$OUT"
-
-          mapfile -d '' IPA_FILES < <(
-            find "$GITHUB_WORKSPACE/nx2apple" "$RUNNER_TEMP" \
-              -type f -iname '*.ipa' \
-              -not -path "$RUNNER_TEMP/nx2apple-inputs/*" \
-              -print0
-          )
-
-          if (( ${#IPA_FILES[@]} == 0 )); then
-            echo "::error::The driver returned success, but no IPA was found in the workspace or runner temp folder."
+          IPA="$INPUTS/SeaOfStars.ipa"
+          if [[ ! -f "$IPA" ]]; then
+            IPA="$(find "$INPUTS" -maxdepth 2 -type f -iname 'SeaOfStars.ipa' -print -quit)"
+          fi
+          if [[ -z "$IPA" || ! -f "$IPA" ]]; then
+            echo "::error::SeaOfStars.ipa was not found in the NX2Apple game output folder."
+            find "$INPUTS" -maxdepth 3 -type f -iname '*.ipa' -print || true
             exit 1
           fi
+          cp "$IPA" "$OUT/SeaOfStars.ipa"
+          echo "Collected game IPA: $IPA"
+          echo "Sea of Stars IPA is ready for automatic artifact upload." >> "$GITHUB_STEP_SUMMARY"
 
-          for ipa in "${IPA_FILES[@]}"; do
-            cp "$ipa" "$OUT/$(basename "$ipa")"
-            echo "Collected IPA: $(basename "$ipa")"
-          done
-
-          echo "Found ${#IPA_FILES[@]} IPA file(s)." >> "$GITHUB_STEP_SUMMARY"
-          echo "IPA output is held on the runner. Upload is controlled by the workflow input." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload IPA artifact (opt-in)
-        if: ${{ success() && inputs.upload_ipa }}
+      - name: Upload IPA artifact automatically
+        if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: NX2Apple-Windows-IPA
@@ -1155,7 +1149,7 @@ jobs:
             echo "- Content selection: $CONTENT_SELECTION"
             echo "- Job status: ${{ job.status }}"
             echo
-            echo "The IPA is uploaded only when the manual upload_ipa input is enabled."
+            echo "- IPA artifact upload: automatic"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload diagnostic logs
