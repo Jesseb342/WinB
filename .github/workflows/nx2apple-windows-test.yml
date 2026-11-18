@@ -461,17 +461,17 @@ jobs:
           profile = Path("dm/games/01008C0016544000/game.tsv")
           source = profile.read_text(encoding="utf-8")
           if "tex_bc_cpu" in source:
-              source = "\\n".join(
+              source = "\n".join(
                   line for line in source.splitlines()
-                  if not line.lstrip().startswith("tex_bc_cpu\\t")
-              ) + "\\n"
+                  if not line.lstrip().startswith("tex_bc_cpu\t")
+              ) + "\n"
           marker = "# ---- Shader split"
           if marker not in source:
               raise SystemExit("Sea of Stars profile layout changed; refusing to enable BC decoding in the wrong section.")
           setting = (
-              "# ---- Graphics ----\\n"
-              "# iPhone 14 (A15) has no hardware BC texture formats; patch 0038 decodes BC1-BC7 on the CPU.\\n"
-              "tex_bc_cpu\\ton\\n\\n"
+              "# ---- Graphics ----\n"
+              "# iPhone 14 (A15) has no hardware BC texture formats; patch 0038 decodes BC1-BC7 on the CPU.\n"
+              "tex_bc_cpu\ton\n\n"
           )
           source = source.replace(marker, setting + marker, 1)
           profile.write_text(source, encoding="utf-8")
@@ -480,7 +480,7 @@ jobs:
           ios_entry = Path("dm/ios/Sources/main.m").read_text(encoding="utf-8")
           if not decoder.is_file() or "DM_GAME_TEX_BC_CPU" not in game_parser or "DM_GAME_TEX_BC_CPU" not in ios_entry:
               raise SystemExit("The BC CPU decoder patch is incomplete; refusing to build an iPhone-incompatible IPA.")
-          if "tex_bc_cpu\\ton" not in profile.read_text(encoding="utf-8"):
+          if "tex_bc_cpu\ton" not in profile.read_text(encoding="utf-8"):
               raise SystemExit("Sea of Stars tex_bc_cpu profile setting was not written.")
           print("Sea of Stars: tex_bc_cpu=on; BC1-BC7 CPU decoder and iOS device-check bypass verified.")
           PY
