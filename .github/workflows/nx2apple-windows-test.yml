@@ -481,17 +481,26 @@ jobs:
           ios_source = ios.read_text(encoding="utf-8")
           old_check = "if (gpu.supportsBCTextureCompression) return NULL;"
           new_check = "if (gpu.supportsBCTextureCompression || DM_GAME_TEX_BC_CPU) return NULL;"
-          if new_check not in ios_source:
-              if old_check not in ios_source:
-                  raise SystemExit("Could not find the expected iOS GPU compatibility check in main.m; source layout changed.")
-              ios_source = ios_source.replace(old_check, new_check, 1)
-              ios.write_text(ios_source, encoding="utf-8")
+          # The regular iOS app checks the GPU here. NX2Apple's framework build
+          # deliberately replaces this with a NULL-returning shim; its separate
+          # launcher handles device compatibility before starting the game.
+          framework_bypass = "const char *front_ios_device_check(void) { return NULL; }"
+          if new_check not in ios_source and framework_bypass not in ios_source:
+              if old_check in ios_source:
+                  ios_source = ios_source.replace(old_check, new_check, 1)
+                  ios.write_text(ios_source, encoding="utf-8")
+              else:
+                  raise SystemExit(
+                      "No recognized iOS device-check implementation in main.m. "
+                      "Expected the standard GPU check or NX2Apple framework shim."
+                  )
 
+          ios_source = ios.read_text(encoding="utf-8")
           checks = {
               "BC decoder source": Path("dm/gfx/tex/nvn_bcdec.c").is_file(),
               "BC decoder header": Path("dm/gfx/tex/nvn_bcdec.h").is_file(),
               "game profile parser": "DM_GAME_TEX_BC_CPU" in Path("dm/games/game.py").read_text(encoding="utf-8"),
-              "iOS device compatibility bypass": new_check in ios.read_text(encoding="utf-8"),
+              "iOS device check allows framework launch": new_check in ios_source or framework_bypass in ios_source,
               "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\\ton" in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
