@@ -462,17 +462,17 @@ jobs:
           if not profile.is_file():
               raise SystemExit(f"Sea of Stars profile is missing: {profile}")
           source = profile.read_text(encoding="utf-8")
-          source = "\\n".join(
+          source = "\n".join(
               line for line in source.splitlines()
-              if not line.lstrip().startswith("tex_bc_cpu\\t")
-          ) + "\\n"
+              if not line.lstrip().startswith("tex_bc_cpu\t")
+          ) + "\n"
           marker = "# ---- Shader split"
           if marker not in source:
               raise SystemExit("Sea of Stars profile has no '# ---- Shader split' marker.")
           setting = (
-              "# ---- Graphics ----\\n"
-              "# iPhone 14 (A15) has no hardware BC texture formats; decode BC1-BC7 on the CPU.\\n"
-              "tex_bc_cpu\\ton\\n\\n"
+              "# ---- Graphics ----\n"
+              "# iPhone 14 (A15) has no hardware BC texture formats; decode BC1-BC7 on the CPU.\n"
+              "tex_bc_cpu\ton\n\n"
           )
           source = source.replace(marker, setting + marker, 1)
           profile.write_text(source, encoding="utf-8")
@@ -490,7 +490,7 @@ jobs:
               "game profile parser": "tex_bc_cpu" in game_parser and "g.get('tex_bc_cpu'" in game_parser,
               "iOS startup GPU check uses profile BC fallback": "gpu.supportsBCTextureCompression || dm_profile()->tex_bc_cpu" in ios_source,
               "Metal renderer permits CPU BC fallback": "!g_dev.supportsBCTextureCompression && !g_bc_cpu" in nvn_source,
-              "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\\ton" in profile.read_text(encoding="utf-8"),
+              "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\ton" in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
               print(f"{'OK' if ok else 'MISSING'}: {name}")
