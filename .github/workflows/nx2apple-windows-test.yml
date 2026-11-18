@@ -482,6 +482,7 @@ jobs:
           game_parser = Path("dm/games/game.py").read_text(encoding="utf-8")
           ios_source = Path("dm/ios/Sources/main.m").read_text(encoding="utf-8")
           nvn_source = Path("dm/gfx/nvn/nvn_mtl.m").read_text(encoding="utf-8")
+          launcher_settings = Path("dm/games/settings.tsv").read_text(encoding="utf-8")
           actual_setting = "tex_bc_cpu\t" + ("on" if enabled else "off")
           checks = {
               "BC decoder source": Path("dm/gfx/tex/nvn_bcdec.c").is_file(),
@@ -489,6 +490,7 @@ jobs:
               "game profile parser": "tex_bc_cpu" in game_parser and "g.get('tex_bc_cpu'" in game_parser,
               "iOS startup GPU check uses profile BC setting": "gpu.supportsBCTextureCompression || dm_profile()->tex_bc_cpu" in ios_source,
               "Metal renderer honors CPU BC setting": "!g_dev.supportsBCTextureCompression && !g_bc_cpu" in nvn_source,
+              "In-game HDR BC6H memory toggle": "DM_BC6H_RGB9E5\\ttoggle" in launcher_settings,
               "Sea of Stars BC fallback selection": actual_setting in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
