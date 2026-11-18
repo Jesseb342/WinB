@@ -331,7 +331,7 @@ jobs:
 
           print(f"Final download response: {len(body):,} bytes, content-type={content_type}")
           if len(body) < 1024 * 1024:
-              preview = body[:160].decode("utf-8", errors="replace").replace("\\n", " ")
+              preview = body[:160].decode("utf-8", errors="replace").replace("\n", " ")
               raise SystemExit(
                   f"Metal download is still not the installer ({len(body):,} bytes). "
                   f"Response begins: {preview!r}. Check Drive sharing permissions and confirmation page."
@@ -490,7 +490,7 @@ jobs:
               "game profile parser": "tex_bc_cpu" in game_parser and "g.get('tex_bc_cpu'" in game_parser,
               "iOS startup GPU check uses profile BC setting": "gpu.supportsBCTextureCompression || dm_profile()->tex_bc_cpu" in ios_source,
               "Metal renderer honors CPU BC setting": "!g_dev.supportsBCTextureCompression && !g_bc_cpu" in nvn_source,
-              "In-game HDR BC6H memory toggle": "DM_BC6H_RGB9E5\\ttoggle" in launcher_settings,
+              "In-game HDR BC6H memory toggle": "DM_BC6H_RGB9E5\ttoggle" in launcher_settings,
               "Sea of Stars BC fallback selection": actual_setting in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
@@ -501,7 +501,7 @@ jobs:
           state = "ON" if enabled else "OFF"
           print(f"Sea of Stars CPU BC texture decoding: {state}")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write(f"Sea of Stars CPU BC texture fallback: **{state}**\\n")
+              summary.write(f"Sea of Stars CPU BC texture fallback: **{state}**\n")
           PY
 
       - name: Save NX2Apple engine cache
@@ -695,7 +695,7 @@ jobs:
           mapfile -d '' NSP_FILES < <(find "$EXTRACT_DIR" -type f -iname '*.nsp' -print0)
           if (( ${#NSP_FILES[@]} != 1 )); then
             echo "::error::Expected exactly one base-game NSP in the downloaded archive; found ${#NSP_FILES[@]}."
-            find "$EXTRACT_DIR" -maxdepth 4 -type f -printf '%p (%s bytes)\\n' | head -100
+            find "$EXTRACT_DIR" -maxdepth 4 -type f -printf '%p (%s bytes)\n' | head -100
             exit 1
           fi
           mv "${NSP_FILES[0]}" "$GAME_DIR/game.nsp"
