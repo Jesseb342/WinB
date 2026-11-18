@@ -14,7 +14,7 @@ on:
           - Base game + DLC (no update)
           - Base game + update + DLC
       upload_ipa:
-        description: Upload the IPA as an Actions artifact. On a public repo, anyone with read access may be able to download it.
+        description: Upload the IPA and separate RomFS game-data artifacts. On a public repo, anyone with read access may be able to download them.
         type: boolean
         required: true
         default: false
@@ -851,7 +851,9 @@ jobs:
           python -c 'import nspb_qt.win.driver as driver; driver._WinProcGroup.DRAIN = 90.0; exec("def _finish_after_pipe_eof(self):" + chr(10) + " self.p.wait()" + chr(10) + " self.done = True" + chr(10) + " if not self._gone(5.0): print(\"[WARN] Build process exited and stdout closed; leaving a detached helper for runner cleanup.\")" + chr(10) + " return self.p.returncode"); driver._WinProcGroup.finish = _finish_after_pipe_eof; raise SystemExit(driver.main())' \
             "$RUNNER_TEMP/nx2apple-inputs/GameFiles" \
             -k "$RUNNER_TEMP/nx2apple-inputs/prod.keys" \
-            --platform ios 2>&1 | tee "$RUNNER_TEMP/nx2apple-windows-build.log"
+            --platform ios \
+            --romfs separate \
+            --keep-extracted 2>&1 | tee "$RUNNER_TEMP/nx2apple-windows-build.log"
 
       - name: Capture full NX2Apple extractor build diagnostics
         if: always()
@@ -926,6 +928,59 @@ jobs:
 
           echo "Found ${#IPA_FILES[@]} IPA file(s)." >> "$GITHUB_STEP_SUMMARY"
           echo "IPA output is held on the runner. Upload is controlled by the workflow input." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect separate RomFS game data
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/nx2apple-windows-build.log"
+          OUT="$RUNNER_TEMP/nx2apple-game-data-output"
+          DEST="$OUT/games/01008C0016544000"
+          mkdir -p "$DEST"
+
+          # NX2Apple prints the exact extracted image path when --romfs separate is active.
+          ROMFS_IMAGE="$(sed -n 's/.*game files: separate .*image stays at //p' "$LOG" | tail -n 1)"
+          if [[ -z "$ROMFS_IMAGE" || ! -s "$ROMFS_IMAGE" ]]; then
+            echo "::error::NX2Apple did not leave a non-empty separate RomFS image. Expected its 'game files: separate' log entry."
+            echo "RomFS-related build log lines:"
+            grep -iE 'game files:|RomFS.img|romfs' "$LOG" | tail -80 || true
+            exit 1
+          fi
+
+          cp "$ROMFS_IMAGE" "$DEST/romfs.img"
+          SIZE="$(wc -c < "$DEST/romfs.img" | tr -d ' ')"
+          HASH="$(sha256sum "$DEST/romfs.img" | awk '{print $1}')"
+          cat > "$OUT/README.txt" <<'EOF'
+          Sea of Stars — NX2Apple separate game data
+
+          This artifact contains the RomFS image excluded from the slim IPA.
+
+          After installing the IPA, open the app and use its Game data section to
+          choose games/01008C0016544000/romfs.img. The launcher remembers the
+          selected location. Keep the image available in Files or iCloud Drive.
+
+          This image belongs to title ID 01008C0016544000. Do not rename or modify it.
+          EOF
+          echo "Collected RomFS image: $ROMFS_IMAGE"
+          echo "Game data size: $SIZE bytes"
+          echo "Game data SHA-256: $HASH"
+          {
+            echo
+            echo "## Separate game data"
+            echo "- RomFS image: $SIZE bytes"
+            echo "- SHA-256: $HASH"
+            echo "- Artifact folder: games/01008C0016544000/romfs.img"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload separate game-data artifact (opt-in)
+        if: ${{ success() && inputs.upload_ipa }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-Windows-Game-Data
+          path: ${{ runner.temp }}/nx2apple-game-data-output/**
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload IPA artifact (opt-in)
         if: ${{ success() && inputs.upload_ipa }}
