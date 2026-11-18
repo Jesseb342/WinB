@@ -72,6 +72,22 @@ jobs:
             ~\AppData\Local\NS Port Builder\sdks
           key: nx2apple-toolchain-${{ runner.os }}-${{ hashFiles('nx2apple/frontend-qt/nspb_qt/win/toolchain.py', 'nx2apple/frontend-qt/nspb_qt/win/fetch.py', 'nx2apple/frontend-qt/nspb_qt/win/sdk_fetch.py') }}
 
+      - name: Preserve fork history for three-way patch application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("nx2apple/tools/engine.py")
+          source = p.read_text(encoding="utf-8")
+          shallow = "git('fetch', '--quiet', '--no-tags', '--depth', '1', url, sha, cwd=eng, check=False)"
+          full = "git('fetch', '--quiet', '--no-tags', url, sha, cwd=eng, check=False)"
+          if shallow not in source:
+              raise SystemExit("Expected shallow engine fetch implementation was not found; refusing to patch an unexpected NX2Apple revision.")
+          p.write_text(source.replace(shallow, full, 1), encoding="utf-8")
+          print("Engine fetch now retains ancestor objects required by git am -3.")
+          PY
+
       - name: Select iPhone-compatible BC texture fallback engine
         shell: bash
         run: |
