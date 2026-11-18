@@ -821,6 +821,110 @@ jobs:
           path: nx2apple/engine/dm/tools/nx_extract_bin
           key: nx2apple-nx-extract-${{ runner.os }}-${{ hashFiles('nx2apple/engine/dm/tools/nx_extract/*.cs', 'nx2apple/engine/dm/tools/nx_extract/*.csproj') }}
 
+      - name: Install on-device RomFS file importer
+        working-directory: nx2apple/frontend-qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path("../engine/dm/ios/Sources/Launcher.swift")
+          text = source.read_text(encoding="utf-8")
+          section_marker = "private struct RomFSImportSection: View {"
+          if section_marker not in text:
+              anchor = "private struct LauncherView: View {"
+              if text.count(anchor) != 1:
+                  raise SystemExit(f"Expected one LauncherView declaration in {source}")
+              section = r'''
+          // Imports the separate RomFS image directly into this app's Documents folder.
+          // This avoids requiring a Mac, USB device connection, or the upstream push_romfs.sh script.
+          private struct RomFSImportSection: View {
+              @State private var picking = false
+              @State private var copying = false
+              @State private var note = ""
+
+              var body: some View {
+                  Section("Game data") {
+                      Button("Choose RomFS.img…") { picking = true }
+                          .disabled(copying)
+                      if copying {
+                          HStack {
+                              ProgressView()
+                              Text("Copying game data to this iPhone…")
+                          }
+                      }
+                      if !note.isEmpty {
+                          Text(note).font(.footnote).foregroundStyle(.secondary)
+                      }
+                  } footer: {
+                      Text("Choose games/01008C0016544000/romfs.img from the downloaded game-data files. The image is copied into this app; wait for the copy to finish before pressing Play.")
+                  }
+                  .sheet(isPresented: $picking) {
+                      DocumentPicker(types: [.data]) { url in
+                          picking = false
+                          importImage(url)
+                      } onCancel: {
+                          picking = false
+                      }
+                  }
+              }
+
+              private func importImage(_ url: URL) {
+                  guard url.lastPathComponent.lowercased() == "romfs.img" else {
+                      note = "Please select the romfs.img file, not the containing folder or README."
+                      return
+                  }
+                  copying = true
+                  note = "Copying game data…"
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      let access = url.startAccessingSecurityScopedResource()
+                      defer { if access { url.stopAccessingSecurityScopedResource() } }
+                      let files = FileManager.default
+                      let documents = files.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                      let temporary = documents.appendingPathComponent("romfs.img.importing")
+                      let destination = documents.appendingPathComponent("romfs.img")
+                      do {
+                          try? files.removeItem(at: temporary)
+                          try files.copyItem(at: url, to: temporary)
+                          let attributes = try files.attributesOfItem(atPath: temporary.path)
+                          guard let size = attributes[.size] as? NSNumber, size.int64Value > 0 else {
+                              throw NSError(domain: "RomFSImport", code: 1,
+                                            userInfo: [NSLocalizedDescriptionKey: "The selected image is empty."])
+                          }
+                          if files.fileExists(atPath: destination.path) {
+                              try files.removeItem(at: destination)
+                          }
+                          try files.moveItem(at: temporary, to: destination)
+                          DispatchQueue.main.async {
+                              copying = false
+                              note = "Game data copied (\(ByteCountFormatter.string(fromByteCount: size.int64Value, countStyle: .file))). Tap Play to start."
+                          }
+                      } catch {
+                          try? files.removeItem(at: temporary)
+                          DispatchQueue.main.async {
+                              copying = false
+                              note = "Could not copy game data: \(error.localizedDescription)"
+                          }
+                      }
+                  }
+              }
+          }
+
+          '''
+              text = text.replace(anchor, section + anchor, 1)
+          if "RomFSImportSection()" not in text:
+              anchor = "                    CloudSavesSection()"
+              if text.count(anchor) != 1:
+                  raise SystemExit(f"Expected one CloudSavesSection insertion point in {source}")
+              text = text.replace(anchor, "                    RomFSImportSection()\n" + anchor, 1)
+          compile_marker = "RomFSImportSection()"
+          if compile_marker not in text or section_marker not in text:
+              raise SystemExit("RomFS importer patch did not apply completely.")
+          source.write_text(text, encoding="utf-8")
+          print("Installed the in-app RomFS image picker and Documents importer.")
+          PY
+
       - name: Build unsigned iOS IPA with NX2Apple Windows driver
         working-directory: nx2apple/frontend-qt
         shell: bash
@@ -956,9 +1060,14 @@ jobs:
 
           This artifact contains the RomFS image excluded from the slim IPA.
 
-          After installing the IPA, open the app and use its Game data section to
-          choose games/01008C0016544000/romfs.img. The launcher remembers the
-          selected location. Keep the image available in Files or iCloud Drive.
+          After installing the updated IPA, open Sea of Stars and find the Game data
+          section. Tap "Choose RomFS.img…" and select:
+          games/01008C0016544000/romfs.img
+
+          The app copies the image into its own Documents folder. Wait for the
+          success message before tapping Play. Allow about 4.1 GB of additional
+          free iPhone storage while importing. The original file can be deleted
+          after the app confirms the copy.
 
           This image belongs to title ID 01008C0016544000. Do not rename or modify it.
           EOF
