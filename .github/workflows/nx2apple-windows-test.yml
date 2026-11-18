@@ -450,39 +450,53 @@ jobs:
           echo "Engine upstream pin: $(cat .upstream-ref)"
           echo "Engine sync complete."
 
-      - name: Enable the patched CPU BC decoder for Sea of Stars (A15 iPhone support)
+      - name: Ensure the BC CPU decoder is present and enable it for Sea of Stars (A15)
         working-directory: nx2apple/engine
         shell: bash
         run: |
           set -euo pipefail
+          # Patch 0038 is in NX2Apple's fork-only queue. If its new decoder
+          # source is absent after sync, apply it explicitly rather than
+          # silently producing an IPA that cannot run on an A15 GPU.
+          if [[ ! -f dm/gfx/tex/nvn_bcdec.c ]]; then
+            echo "BC decoder source is absent after engine sync; applying patch 0038 directly."
+            git am -3 ../patches/0038-bc-cpu-decode.patch
+          fi
           python - <<'PY'
           from pathlib import Path
 
           profile = Path("dm/games/01008C0016544000/game.tsv")
+          if not profile.is_file():
+              raise SystemExit(f"Sea of Stars profile is missing: {profile}")
           source = profile.read_text(encoding="utf-8")
-          if "tex_bc_cpu" in source:
-              source = "\n".join(
-                  line for line in source.splitlines()
-                  if not line.lstrip().startswith("tex_bc_cpu\t")
-              ) + "\n"
+          source = "\\n".join(
+              line for line in source.splitlines()
+              if not line.lstrip().startswith("tex_bc_cpu\\t")
+          ) + "\\n"
           marker = "# ---- Shader split"
           if marker not in source:
-              raise SystemExit("Sea of Stars profile layout changed; refusing to enable BC decoding in the wrong section.")
+              raise SystemExit("Sea of Stars profile has no '# ---- Shader split' marker.")
           setting = (
-              "# ---- Graphics ----\n"
-              "# iPhone 14 (A15) has no hardware BC texture formats; patch 0038 decodes BC1-BC7 on the CPU.\n"
-              "tex_bc_cpu\ton\n\n"
+              "# ---- Graphics ----\\n"
+              "# iPhone 14 (A15) has no hardware BC texture formats; decode BC1-BC7 on the CPU.\\n"
+              "tex_bc_cpu\\ton\\n\\n"
           )
           source = source.replace(marker, setting + marker, 1)
           profile.write_text(source, encoding="utf-8")
-          decoder = Path("dm/gfx/tex/nvn_bcdec.c")
-          game_parser = Path("dm/games/game.py").read_text(encoding="utf-8")
-          ios_entry = Path("dm/ios/Sources/main.m").read_text(encoding="utf-8")
-          if not decoder.is_file() or "DM_GAME_TEX_BC_CPU" not in game_parser or "DM_GAME_TEX_BC_CPU" not in ios_entry:
-              raise SystemExit("The BC CPU decoder patch is incomplete; refusing to build an iPhone-incompatible IPA.")
-          if "tex_bc_cpu\ton" not in profile.read_text(encoding="utf-8"):
-              raise SystemExit("Sea of Stars tex_bc_cpu profile setting was not written.")
-          print("Sea of Stars: tex_bc_cpu=on; BC1-BC7 CPU decoder and iOS device-check bypass verified.")
+
+          checks = {
+              "BC decoder source": Path("dm/gfx/tex/nvn_bcdec.c").is_file(),
+              "BC decoder header": Path("dm/gfx/tex/nvn_bcdec.h").is_file(),
+              "game profile parser": "DM_GAME_TEX_BC_CPU" in Path("dm/games/game.py").read_text(encoding="utf-8"),
+              "iOS device compatibility bypass": "DM_GAME_TEX_BC_CPU" in Path("dm/ios/Sources/main.m").read_text(encoding="utf-8"),
+              "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\\ton" in profile.read_text(encoding="utf-8"),
+          }
+          for name, ok in checks.items():
+              print(f"{'OK' if ok else 'MISSING'}: {name}")
+          missing = [name for name, ok in checks.items() if not ok]
+          if missing:
+              raise SystemExit("BC fallback verification failed: " + ", ".join(missing))
+          print("Sea of Stars: BC1-BC7 CPU decoder and A15 device-check bypass verified.")
           PY
           echo "Sea of Stars BC1-BC7 CPU fallback enabled for A15/A16 devices." >> "$GITHUB_STEP_SUMMARY"
 
