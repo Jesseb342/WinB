@@ -331,7 +331,7 @@ jobs:
 
           print(f"Final download response: {len(body):,} bytes, content-type={content_type}")
           if len(body) < 1024 * 1024:
-              preview = body[:160].decode("utf-8", errors="replace").replace("\n", " ")
+              preview = body[:160].decode("utf-8", errors="replace").replace("\\n", " ")
               raise SystemExit(
                   f"Metal download is still not the installer ({len(body):,} bytes). "
                   f"Response begins: {preview!r}. Check Drive sharing permissions and confirmation page."
@@ -695,7 +695,7 @@ jobs:
           mapfile -d '' NSP_FILES < <(find "$EXTRACT_DIR" -type f -iname '*.nsp' -print0)
           if (( ${#NSP_FILES[@]} != 1 )); then
             echo "::error::Expected exactly one base-game NSP in the downloaded archive; found ${#NSP_FILES[@]}."
-            find "$EXTRACT_DIR" -maxdepth 4 -type f -printf '%p (%s bytes)\n' | head -100
+            find "$EXTRACT_DIR" -maxdepth 4 -type f -printf '%p (%s bytes)\\n' | head -100
             exit 1
           fi
           mv "${NSP_FILES[0]}" "$GAME_DIR/game.nsp"
