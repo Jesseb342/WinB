@@ -17,7 +17,7 @@ on:
         description: Upload the IPA and separate RomFS game-data artifacts. On a public repo, anyone with read access may be able to download them.
         type: boolean
         required: true
-        default: false
+        default: true
 
 permissions:
   contents: read
