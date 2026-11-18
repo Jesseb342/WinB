@@ -450,18 +450,11 @@ jobs:
           echo "Engine upstream pin: $(cat .upstream-ref)"
           echo "Engine sync complete."
 
-      - name: Ensure the BC CPU decoder is present and enable it for Sea of Stars (A15)
+      - name: Enable and verify the BC CPU fallback for Sea of Stars (A15)
         working-directory: nx2apple/engine
         shell: bash
         run: |
           set -euo pipefail
-          # Patch 0038 is in NX2Apple's fork-only queue. If its new decoder
-          # source is absent after sync, apply it explicitly rather than
-          # silently producing an IPA that cannot run on an A15 GPU.
-          if [[ ! -f dm/gfx/tex/nvn_bcdec.c ]]; then
-            echo "BC decoder source is absent after engine sync; applying patch 0038 directly."
-            git am -3 ../patches/0038-bc-cpu-decode.patch
-          fi
           python - <<'PY'
           from pathlib import Path
 
@@ -484,11 +477,21 @@ jobs:
           source = source.replace(marker, setting + marker, 1)
           profile.write_text(source, encoding="utf-8")
 
+          ios = Path("dm/ios/Sources/main.m")
+          ios_source = ios.read_text(encoding="utf-8")
+          old_check = "if (gpu.supportsBCTextureCompression) return NULL;"
+          new_check = "if (gpu.supportsBCTextureCompression || DM_GAME_TEX_BC_CPU) return NULL;"
+          if new_check not in ios_source:
+              if old_check not in ios_source:
+                  raise SystemExit("Could not find the expected iOS GPU compatibility check in main.m; source layout changed.")
+              ios_source = ios_source.replace(old_check, new_check, 1)
+              ios.write_text(ios_source, encoding="utf-8")
+
           checks = {
               "BC decoder source": Path("dm/gfx/tex/nvn_bcdec.c").is_file(),
               "BC decoder header": Path("dm/gfx/tex/nvn_bcdec.h").is_file(),
               "game profile parser": "DM_GAME_TEX_BC_CPU" in Path("dm/games/game.py").read_text(encoding="utf-8"),
-              "iOS device compatibility bypass": "DM_GAME_TEX_BC_CPU" in Path("dm/ios/Sources/main.m").read_text(encoding="utf-8"),
+              "iOS device compatibility bypass": new_check in ios.read_text(encoding="utf-8"),
               "Sea of Stars tex_bc_cpu setting": "tex_bc_cpu\\ton" in profile.read_text(encoding="utf-8"),
           }
           for name, ok in checks.items():
