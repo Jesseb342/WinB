@@ -875,7 +875,7 @@ jobs:
               self.romfsStatus.text = @"Importing GameFS… keep the app open.";
               dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                   BOOL access = [sourceURL startAccessingSecurityScopedResource];
-                  NSError *error = nil;
+                  __block NSError *error = nil;
                   NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
                   NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                        inDomains:NSUserDomainMask].firstObject;
@@ -911,7 +911,7 @@ jobs:
                           NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)bytes
                                                                          countStyle:NSByteCountFormatterCountStyleFile];
                           self.romfsStatus.text = [NSString stringWithFormat:@"GameFS imported (%@). Tap Play.", size];
-                          fprintf(stderr, "launcher: GameFS imported to Documents/romfs.img (%llu bytes)\\n", bytes);
+                          fprintf(stderr, "launcher: GameFS imported to Documents/romfs.img (%llu bytes)\n", bytes);
                       }
                   });
               });
