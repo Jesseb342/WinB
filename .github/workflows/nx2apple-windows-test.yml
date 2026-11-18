@@ -439,8 +439,6 @@ jobs:
       - name: Sync NX2Apple engine and patch queue
         working-directory: nx2apple
         shell: bash
-        env:
-          NX2APPLE_ENGINE_URL: ${{ env.NX2APPLE_ENGINE_URL }}
         run: |
           set -euo pipefail
           python tools/engine.py -q sync
