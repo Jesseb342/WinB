@@ -88,17 +88,6 @@ jobs:
           print("Engine fetch now retains ancestor objects required by git am -3.")
           PY
 
-      - name: Select iPhone-compatible BC texture fallback engine
-        shell: bash
-        run: |
-          set -euo pipefail
-          # This fork retains the no-BC fallback required by A15-class iPhones.
-          # Pin an immutable commit so the cached engine and every build are reproducible.
-          BC_ENGINE_COMMIT="15f5737d1fa5216cde187a718da8edaf4eaf3efd"
-          printf '%s\n' "$BC_ENGINE_COMMIT" > nx2apple/.upstream-ref
-          echo "NX2APPLE_ENGINE_URL=https://github.com/mianmuhammadse/nxnative.git" >> "$GITHUB_ENV"
-          echo "BC fallback engine: mianmuhammadse/nxnative@$BC_ENGINE_COMMIT"
-          echo "BC fallback engine: mianmuhammadse/nxnative@$BC_ENGINE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
       - name: Record NX2Apple revision
         shell: bash
         run: |
@@ -460,6 +449,42 @@ jobs:
           python tools/engine.py -q sync
           echo "Engine upstream pin: $(cat .upstream-ref)"
           echo "Engine sync complete."
+
+      - name: Enable the patched CPU BC decoder for Sea of Stars (A15 iPhone support)
+        working-directory: nx2apple/engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          profile = Path("dm/games/01008C0016544000/game.tsv")
+          source = profile.read_text(encoding="utf-8")
+          if "tex_bc_cpu" in source:
+              source = "\\n".join(
+                  line for line in source.splitlines()
+                  if not line.lstrip().startswith("tex_bc_cpu\\t")
+              ) + "\\n"
+          marker = "# ---- Shader split"
+          if marker not in source:
+              raise SystemExit("Sea of Stars profile layout changed; refusing to enable BC decoding in the wrong section.")
+          setting = (
+              "# ---- Graphics ----\\n"
+              "# iPhone 14 (A15) has no hardware BC texture formats; patch 0038 decodes BC1-BC7 on the CPU.\\n"
+              "tex_bc_cpu\\ton\\n\\n"
+          )
+          source = source.replace(marker, setting + marker, 1)
+          profile.write_text(source, encoding="utf-8")
+          decoder = Path("dm/gfx/tex/nvn_bcdec.c")
+          game_parser = Path("dm/games/game.py").read_text(encoding="utf-8")
+          ios_entry = Path("dm/ios/Sources/main.m").read_text(encoding="utf-8")
+          if not decoder.is_file() or "DM_GAME_TEX_BC_CPU" not in game_parser or "DM_GAME_TEX_BC_CPU" not in ios_entry:
+              raise SystemExit("The BC CPU decoder patch is incomplete; refusing to build an iPhone-incompatible IPA.")
+          if "tex_bc_cpu\\ton" not in profile.read_text(encoding="utf-8"):
+              raise SystemExit("Sea of Stars tex_bc_cpu profile setting was not written.")
+          print("Sea of Stars: tex_bc_cpu=on; BC1-BC7 CPU decoder and iOS device-check bypass verified.")
+          PY
+          echo "Sea of Stars BC1-BC7 CPU fallback enabled for A15/A16 devices." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save NX2Apple engine cache
         if: ${{ success() && steps.engine-cache.outputs.cache-hit != 'true' }}
