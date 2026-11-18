@@ -79,7 +79,7 @@ jobs:
           # This fork retains the no-BC fallback required by A15-class iPhones.
           # Pin an immutable commit so the cached engine and every build are reproducible.
           BC_ENGINE_COMMIT="15f5737d1fa5216cde187a718da8edaf4eaf3efd"
-          printf '%s\\n' "$BC_ENGINE_COMMIT" > nx2apple/.upstream-ref
+          printf '%s\n' "$BC_ENGINE_COMMIT" > nx2apple/.upstream-ref
           echo "NX2APPLE_ENGINE_URL=https://github.com/mianmuhammadse/nxnative.git" >> "$GITHUB_ENV"
           echo "BC fallback engine: mianmuhammadse/nxnative@$BC_ENGINE_COMMIT"
           echo "BC fallback engine: mianmuhammadse/nxnative@$BC_ENGINE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
