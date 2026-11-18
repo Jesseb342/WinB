@@ -919,10 +919,13 @@ jobs:
 
           '''
           if "- (void)chooseRomFS {" not in text:
-              anchor = "- (void)viewDidLoad {"
-              if text.count(anchor) != 1:
-                  raise SystemExit("Could not locate launcher viewDidLoad.")
-              text = text.replace(anchor, methods + anchor, 1)
+              implementation = text.find("@implementation NspbLauncherVC")
+              if implementation < 0:
+                  raise SystemExit("Could not locate NspbLauncherVC implementation.")
+              anchor_pos = text.find("- (void)viewDidLoad {", implementation)
+              if anchor_pos < 0:
+                  raise SystemExit("Could not locate NspbLauncherVC viewDidLoad.")
+              text = text[:anchor_pos] + methods + text[anchor_pos:]
 
           old_ui = """    [card addArrangedSubview:play];
               [card setCustomSpacing:20 afterView:ver];"""
